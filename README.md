@@ -173,16 +173,17 @@ if __name__ == "__main__":
 
 Let me know how to proceed!
 
-Usage
-Run the script
+## Usage
 
-Paste the YouTube video URL
+1. Run the script  
+2. Paste the YouTube video URL  
+3. Choose format and resolution  
+4. Download your video  
 
-Choose format and resolution
+## License
 
-Download your video
-
-License
 This project is licensed under the MIT License.
 
-Made with ❤️ by mdakashhossain1
+---
+
+Made with ❤️ by [mdakashhossain1](https://github.com/mdakashhossain1)
