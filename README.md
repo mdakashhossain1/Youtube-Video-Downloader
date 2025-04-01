@@ -172,3 +172,17 @@ if __name__ == "__main__":
 - **Clarify**: If I misunderstood and you meant something else (e.g., a different file or format), please let me know the exact file or content you’re referring to!
 
 Let me know how to proceed!
+
+Usage
+Run the script
+
+Paste the YouTube video URL
+
+Choose format and resolution
+
+Download your video
+
+License
+This project is licensed under the MIT License.
+
+Made with ❤️ by mdakashhossain1
