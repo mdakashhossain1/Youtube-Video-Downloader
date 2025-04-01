@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube Downloader</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+        }
+        .container {
+            max-width: 500px;
+            margin: auto;
+            text-align: center;
+        }
+        input, button {
+            padding: 10px;
+            margin: 10px 0;
+            width: 100%;
+        }
+        button {
+            background-color: #28a745;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+        button:hover {
+            background-color: #218838;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>YouTube Downloader</h1>
+        <input id="url" type="text" placeholder="Enter YouTube URL" />
+        <button onclick="downloadVideo()">Download Video</button>
+        <p id="status"></p>
+    </div>
+    <script>
+        async function downloadVideo() {
+            const url = document.getElementById('url').value;
+            if (!url) {
+                alert('Please enter a URL.');
+                return;
+            }
+
+            document.getElementById('status').innerText = 'Downloading...';
+
+            try {
+                const response = await fetch(`/download?url=${encodeURIComponent(url)}`);
+                if (response.ok) {
+                    const blob = await response.blob();
+                    const downloadLink = document.createElement('a');
+                    downloadLink.href = URL.createObjectURL(blob);
+                    downloadLink.download = 'video.mp4';
+                    document.body.appendChild(downloadLink);
+                    downloadLink.click();
+                    document.body.removeChild(downloadLink);
+                    document.getElementById('status').innerText = 'Download complete!';
+                } else {
+                    document.getElementById('status').innerText = 'Failed to download video.';
+                }
+            } catch (error) {
+                document.getElementById('status').innerText = 'Error occurred: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>
