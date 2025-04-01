@@ -58,6 +58,3 @@ This project is licensed under the MIT License.
 ---
 
 Made with ❤️ by [mdakashhossain1](https://github.com/mdakashhossain1)
-```
-
-You can copy this into a `README.md` file at the root of your repo. Want to add screenshots or demo GIFs too?
