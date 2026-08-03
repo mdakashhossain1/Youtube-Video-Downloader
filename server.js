@@ -1,7 +1,7 @@
 const http = require('http');
-const { spawn } = require('child_process');
 const express = require('express');
 const ytdl = require('youtube-dl-exec'); // yt-dlp wrapper (used for metadata)
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
@@ -37,6 +37,15 @@ const YTDLP_PATH = require('youtube-dl-exec').constants.YOUTUBE_DL_PATH;
 function ensureDirs() {
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
     if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
+}
+
+// downloads/ only holds transient, in-progress files. Clear leftovers from a
+// previous run so we never serve stale copies and never leak disk space.
+function clearDownloadsDir() {
+    if (!fs.existsSync(downloadsDir)) return;
+    for (const name of fs.readdirSync(downloadsDir)) {
+        if (!name.startsWith('.')) fs.unlink(path.join(downloadsDir, name), () => {});
+    }
 }
 
 function sendError(res, status, message) {
@@ -102,23 +111,14 @@ function baseFlags(extra = {}) {
     };
 }
 
-// Fetch video metadata once (title, thumbnail, author, duration, views).
+// Fetch the full metadata + format list for a video.
 async function fetchVideoInfo(videoUrl) {
-    const info = await ytdl(videoUrl, baseFlags({ dumpSingleJson: true }));
-    return {
-        id: info.id || '',
-        title: info.title || '',
-        thumbnail: info.thumbnail || null,
-        author: info.channel || info.uploader || 'Unknown',
-        duration: Number(info.duration) || 0,
-        views: Number(info.view_count) || 0,
-    };
+    return await ytdl(videoUrl, baseFlags({ dumpSingleJson: true }));
 }
 
-// Command-line args passed to the yt-dlp binary (used by /prepare so we can
-// stream live progress to the client while it downloads).
-function getYtDlpArgs(videoUrl, format, outputBase) {
-    const common = [
+// Build the raw argv passed to the yt-dlp binary.
+function buildYtDlpArgv(videoUrl, job, outputBase, { newline = false } = {}) {
+    const argv = [
         videoUrl,
         '-o', `${outputBase}.%(ext)s`,
         '--no-playlist',
@@ -126,21 +126,68 @@ function getYtDlpArgs(videoUrl, format, outputBase) {
         '--no-check-certificates',
         '--socket-timeout', '60000',
         '--ffmpeg-location', FFMPEG_PATH,
-        '--newline', // one progress line per update, on stdout
     ];
-    if (format === 'mp3') {
-        common.push('-x', '--audio-format', 'mp3', '--audio-quality', '5');
-    } else {
-        common.push(
-            '-f', 'bv*[ext=mp4][vcodec!=vp9]+ba[ext=m4a]/b[ext=mp4]/b',
-            '--merge-output-format', 'mp4'
-        );
-    }
-    return common;
+    if (newline) argv.push('--newline'); // one progress line per update, on stdout
+    if (job.args) argv.push(...job.args);
+    if (job.mergeFormat) argv.push('--merge-output-format', job.mergeFormat);
+    return argv;
 }
 
-// ---- Video metadata (used by the preview card) ----
-app.get('/info', async (req, res) => {
+// Turn a user's request (kind + format id) into a download job.
+//   kind=video, format=<fid> : that specific video stream (+ best audio, merged)
+//   kind=audio, format=<fid> : that specific audio stream, as-is
+//   kind=mp3                 : best audio converted to MP3
+//   legacy format=mp4/mp3    : best MP4 (merged) / best MP3
+async function resolveJob(videoUrl, kind, format) {
+    const info = await fetchVideoInfo(videoUrl);
+    const id = info.id || extractVideoId(videoUrl) || 'video';
+    const title = sanitizeFilename(info.title || id);
+    const formats = info.formats || [];
+    const fmt = formats.find((f) => f.format_id === format);
+    const hasAudio = fmt && fmt.acodec && fmt.acodec !== 'none';
+
+    const job = { id, title, info, args: null, mergeFormat: null };
+
+    if (kind === 'mp3' || (!kind && format === 'mp3')) {
+        // -x + --audio-format mp3 already converts; no --merge-output-format (mp3 is not a container).
+        job.prefix = `${id}_mp3`;
+        job.args = ['-x', '--audio-format', 'mp3', '--audio-quality', '5'];
+        job.container = 'mp3';
+    } else if (kind === 'audio' && fmt) {
+        job.prefix = `${id}_a_${format}`;
+        job.args = ['-f', format];
+        job.container = fmt.ext; // m4a / webm / opus...
+    } else if (kind === 'video' && fmt) {
+        // Video stream chosen by the user → merge with the best compatible audio.
+        job.prefix = `${id}_v_${format}`;
+        job.args = hasAudio
+            ? ['-f', format]
+            : ['-f', `${format}+ba[ext=m4a]/${format}+ba`];
+        job.mergeFormat = fmt.ext === 'webm' ? 'webm' : 'mp4';
+        job.container = job.mergeFormat;
+    } else {
+        // Legacy / default: best quality MP4.
+        job.prefix = `${id}_mp4`;
+        job.args = ['-f', 'bv*[ext=mp4][vcodec!=vp9]+ba[ext=m4a]/b[ext=mp4]/b'];
+        job.mergeFormat = 'mp4';
+        job.container = 'mp4';
+    }
+
+    return job;
+}
+
+// Human short names for codecs.
+function codecName(vcodec) {
+    if (!vcodec || vcodec === 'none') return null;
+    if (/av01/i.test(vcodec)) return 'AV1';
+    if (/vp09|vp9/i.test(vcodec)) return 'VP9';
+    if (/avc1/i.test(vcodec)) return 'H.264';
+    if (/hev1|hvc1/i.test(vcodec)) return 'H.265';
+    return vcodec;
+}
+
+// ---- Video metadata + ALL available formats ----
+app.get('/formats', async (req, res) => {
     const videoUrl = req.query.url;
 
     if (!isYouTubeUrl(videoUrl)) {
@@ -148,12 +195,97 @@ app.get('/info', async (req, res) => {
     }
 
     try {
-        res.json(await fetchVideoInfo(videoUrl));
+        const info = await fetchVideoInfo(videoUrl);
+
+        const video = [];
+        const audio = [];
+        const combined = [];
+
+        for (const f of info.formats || []) {
+            const hasV = f.vcodec && f.vcodec !== 'none';
+            const hasA = f.acodec && f.acodec !== 'none';
+            if (!hasV && !hasA) continue; // storyboards, data streams, etc.
+
+            const entry = {
+                id: f.format_id,
+                ext: f.ext,
+                height: f.height || null,
+                width: f.width || null,
+                fps: f.fps || null,
+                vcodec: hasV ? codecName(f.vcodec) : null,
+                acodec: hasA ? (f.acodec === 'none' ? null : f.acodec) : null,
+                abr: f.abr || null,
+                size: f.filesize || f.filesize_approx || 0,
+            };
+
+            if (hasV && hasA) combined.push(entry);
+            else if (hasV) video.push(entry);
+            else if (hasA) audio.push(entry);
+        }
+
+        const byRes = (a, b) =>
+            (b.height || 0) - (a.height || 0) || (b.fps || 0) - (a.fps || 0) || a.ext.localeCompare(b.ext);
+        const byBitrate = (a, b) => (b.abr || 0) - (a.abr || 0) || a.ext.localeCompare(b.ext);
+
+        video.sort(byRes);
+        combined.sort(byRes);
+        audio.sort(byBitrate);
+
+        res.json({
+            id: info.id || '',
+            title: info.title || '',
+            thumbnail: info.thumbnail || null,
+            author: info.channel || info.uploader || 'Unknown',
+            duration: Number(info.duration) || 0,
+            views: Number(info.view_count) || 0,
+            video,
+            audio,
+            combined,
+        });
+    } catch (err) {
+        console.error('Error fetching formats:', err.message);
+        sendError(res, 500, 'Could not fetch video information. The video may be unavailable or private.');
+    }
+});
+
+// ---- Legacy single-file metadata endpoint ----
+app.get('/info', async (req, res) => {
+    const videoUrl = req.query.url;
+    if (!isYouTubeUrl(videoUrl)) {
+        return sendError(res, 400, 'Invalid YouTube URL.');
+    }
+    try {
+        const info = await fetchVideoInfo(videoUrl);
+        res.json({
+            id: info.id || '',
+            title: info.title || '',
+            thumbnail: info.thumbnail || null,
+            author: info.channel || info.uploader || 'Unknown',
+            duration: Number(info.duration) || 0,
+            views: Number(info.view_count) || 0,
+        });
     } catch (err) {
         console.error('Error fetching video info:', err.message);
         sendError(res, 500, 'Could not fetch video information. The video may be unavailable or private.');
     }
 });
+
+// Run one yt-dlp attempt. Returns { code, stderrTail }.
+// `onStdout` (optional) receives each stdout chunk so callers can stream progress.
+function runYtDlpOnce(argv, onStdout) {
+    return new Promise((resolve) => {
+        const child = spawn(YTDLP_PATH, argv, { windowsHide: true });
+        let stderrTail = '';
+        if (onStdout) child.stdout.setEncoding('utf8');
+        if (onStdout) child.stdout.on('data', onStdout);
+        child.stderr.setEncoding('utf8');
+        child.stderr.on('data', (d) => {
+            stderrTail = (stderrTail + d).slice(-2000);
+        });
+        child.on('error', (err) => resolve({ code: 1, stderrTail: err.message, child }));
+        child.on('close', (code) => resolve({ code, stderrTail, child }));
+    });
+}
 
 // ---- Prepare: download the file, streaming live progress as NDJSON ----
 // Emits lines like  {"type":"progress","phase":"download","pct":42.3}
@@ -162,7 +294,8 @@ app.get('/info', async (req, res) => {
 //                    {"type":"error","message":"..."}
 app.get('/prepare', async (req, res) => {
     const videoUrl = req.query.url;
-    const format = (req.query.format || 'mp4').toLowerCase();
+    const kind = req.query.kind || 'video';
+    const format = req.query.format || 'mp4';
 
     if (!isYouTubeUrl(videoUrl)) {
         return sendError(res, 400, 'Invalid YouTube URL.');
@@ -181,28 +314,24 @@ app.get('/prepare', async (req, res) => {
         if (!res.writableEnded) res.write(JSON.stringify(obj) + '\n');
     };
 
-    const prefixBase = `${extractVideoId(videoUrl) || 'video'}_${format}`;
-    const outputBase = path.join(downloadsDir, prefixBase);
-
     try {
-        const info = await fetchVideoInfo(videoUrl);
-        const filename = sanitizeFilename(info.title) || info.id || 'video';
+        const job = await resolveJob(videoUrl, kind, format);
+        const outputBase = path.join(downloadsDir, job.prefix);
 
         // Already downloaded earlier? Hand it over instantly.
-        const existing = findOutputFile(prefixBase);
+        const existing = findOutputFile(job.prefix);
         if (existing) {
-            emit({ type: 'done', name: filename + path.extname(existing), size: fs.statSync(existing).size });
+            emit({ type: 'done', name: job.title + path.extname(existing), size: fs.statSync(existing).size });
             return res.end();
         }
 
-        console.log(`Preparing ${format} for ${info.id}...`);
-        const child = spawn(YTDLP_PATH, getYtDlpArgs(videoUrl, format, outputBase), { windowsHide: true });
+        console.log(`Preparing ${kind} (${format}) for ${job.id}...`);
+        const argv = buildYtDlpArgv(videoUrl, job, outputBase, { newline: true });
 
-        let stderrTail = '';
+        let current = null;
         let finished = false;
 
-        child.stdout.setEncoding('utf8');
-        child.stdout.on('data', (chunk) => {
+        const onStdout = (chunk) => {
             for (const raw of chunk.split('\n')) {
                 const line = raw.trim();
                 if (!line) continue;
@@ -213,40 +342,39 @@ app.get('/prepare', async (req, res) => {
                     emit({ type: 'progress', phase: 'merge' });
                 }
             }
-        });
-
-        child.stderr.setEncoding('utf8');
-        child.stderr.on('data', (d) => {
-            stderrTail = (stderrTail + d).slice(-2000);
-        });
+        };
 
         // Client went away — stop the download to avoid orphan work.
         res.on('close', () => {
-            if (!finished) child.kill();
+            if (!finished && current) current.kill();
         });
 
-        child.on('error', (err) => {
-            finished = true;
-            emit({ type: 'error', message: err.message });
-            res.end();
-        });
+        // Attempt (retry once — YouTube occasionally drops the first request).
+        let result = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            if (attempt > 1) {
+                console.log('Retrying download attempt...');
+                cleanOutputFiles(job.prefix);
+            }
+            result = await runYtDlpOnce(argv, onStdout);
+            if (result.code === 0 || attempt === 2) break;
+        }
 
-        child.on('close', (code) => {
-            finished = true;
-            if (code === 0) {
-                const out = findOutputFile(prefixBase);
-                if (!out) {
-                    emit({ type: 'error', message: 'Output file was not created.' });
-                    return res.end();
-                }
-                emit({ type: 'done', name: filename + path.extname(out), size: fs.statSync(out).size });
+        finished = true;
+
+        if (result.code === 0) {
+            const out = findOutputFile(job.prefix);
+            if (!out) {
+                emit({ type: 'error', message: 'Output file was not created.' });
                 return res.end();
             }
-            cleanOutputFiles(prefixBase);
-            const detail = stderrTail.split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300);
-            emit({ type: 'error', message: 'Download failed.' + (detail ? ` ${detail}` : '') });
-            res.end();
-        });
+            emit({ type: 'done', name: job.title + path.extname(out), size: fs.statSync(out).size });
+            return res.end();
+        }
+        cleanOutputFiles(job.prefix);
+        const detail = result.stderrTail.split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300);
+        emit({ type: 'error', message: 'Download failed.' + (detail ? ` ${detail}` : '') });
+        res.end();
     } catch (err) {
         console.error('Error in /prepare:', err.message);
         emit({ type: 'error', message: err.message || 'Download failed.' });
@@ -254,10 +382,11 @@ app.get('/prepare', async (req, res) => {
     }
 });
 
-// ---- Download: serve the prepared file (or run yt-dlp as a fallback) ----
+// ---- Download: serve the prepared file (or prepare it on the fly) ----
 app.get('/download', async (req, res) => {
     const videoUrl = req.query.url;
-    const format = (req.query.format || 'mp4').toLowerCase();
+    const kind = req.query.kind || 'video';
+    const format = req.query.format || 'mp4';
 
     if (!isYouTubeUrl(videoUrl)) {
         return sendError(res, 400, 'Invalid YouTube URL.');
@@ -265,64 +394,59 @@ app.get('/download', async (req, res) => {
 
     ensureDirs();
 
-    const prefixBase = `${extractVideoId(videoUrl) || 'video'}_${format}`;
-    const outputBase = path.join(downloadsDir, prefixBase);
-
     try {
-        const info = await fetchVideoInfo(videoUrl);
-        const filename = sanitizeFilename(info.title) || info.id || 'video';
+        const job = await resolveJob(videoUrl, kind, format);
+        const outputBase = path.join(downloadsDir, job.prefix);
 
         // Already prepared? Serve it straight away (the common case after /prepare).
-        const existing = findOutputFile(prefixBase);
+        const existing = findOutputFile(job.prefix);
         if (existing) {
-            return res.download(existing, filename + path.extname(existing), (err) => {
+            return res.download(existing, job.title + path.extname(existing), (err) => {
                 if (err) console.error('Error during download:', err);
-                cleanOutputFiles(prefixBase);
+                cleanOutputFiles(job.prefix);
             });
         }
 
-        // Fallback for direct API calls: download without progress.
-        if (format === 'mp3') {
-            console.log('Downloading and converting to MP3...');
-            await ytdl(videoUrl, baseFlags({
-                extractAudio: true,
-                audioFormat: 'mp3',
-                audioQuality: 5,
-                output: `${outputBase}.%(ext)s`,
-                socketTimeout: 60000,
-            }));
-        } else {
-            console.log('Downloading and merging MP4...');
-            await ytdl(videoUrl, baseFlags({
-                format: 'bv*[ext=mp4][vcodec!=vp9]+ba[ext=m4a]/b[ext=mp4]/b',
-                mergeOutputFormat: 'mp4',
-                output: `${outputBase}.%(ext)s`,
-                socketTimeout: 60000,
-            }));
+        // Fallback for direct API calls: download without streaming progress.
+        console.log(`Downloading ${kind} (${format}) for ${job.id}...`);
+        const argv = buildYtDlpArgv(videoUrl, job, outputBase);
+
+        let result = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+            if (attempt > 1) {
+                console.log('Retrying download attempt...');
+                cleanOutputFiles(job.prefix);
+            }
+            result = await runYtDlpOnce(argv);
+            if (result.code === 0 || attempt === 2) break;
         }
 
-        const outputPath = findOutputFile(prefixBase);
+        if (result.code !== 0) {
+            cleanOutputFiles(job.prefix);
+            const detail = result.stderrTail.split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 200);
+            return sendError(res, 500, 'Error processing the video.' + (detail ? ` ${detail}` : ' Please try again.'));
+        }
+
+        const outputPath = findOutputFile(job.prefix);
         if (!outputPath) {
-            throw new Error('The output file was not created.');
+            cleanOutputFiles(job.prefix);
+            return sendError(res, 500, 'The output file was not created.');
         }
 
-        res.download(outputPath, filename + path.extname(outputPath), (err) => {
+        res.download(outputPath, job.title + path.extname(outputPath), (err) => {
             if (err) console.error('Error during download:', err);
-            cleanOutputFiles(prefixBase);
+            cleanOutputFiles(job.prefix);
         });
     } catch (err) {
         console.error('Error during download:', err.stderr || err.message);
-        cleanOutputFiles(prefixBase);
-        const detail = String(err.stderr || err.message || '')
-            .split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 200);
-        sendError(res, 500, 'Error processing the video.' + (detail ? ` ${detail}` : ' Please try again.'));
+        sendError(res, 500, 'Error processing the video. Please try again.');
     }
 });
 
 // SPA fallback — serve the React app for any unmatched GET route
 if (distBuilt) {
     app.use((req, res, next) => {
-        if (req.method !== 'GET' || req.path.startsWith('/info') || req.path.startsWith('/prepare') || req.path.startsWith('/download')) {
+        if (req.method !== 'GET' || ['/info', '/formats', '/prepare', '/download'].some((p) => req.path.startsWith(p))) {
             return next();
         }
         res.sendFile(path.join(distDir, 'index.html'), (err) => {
@@ -336,6 +460,8 @@ if (distBuilt) {
 // "Server running" followed by an immediate clean exit with code 0).
 const server = http.createServer(app);
 server.listen({ port: PORT, exclusive: true }, () => {
+    ensureDirs();
+    clearDownloadsDir();
     console.log(`Server running on http://localhost:${PORT}`);
 });
 

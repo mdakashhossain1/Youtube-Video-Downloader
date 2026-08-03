@@ -1,3 +1,11 @@
+import { clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+
+// Merge Tailwind class strings, later classes winning (shadcn/ui convention).
+export function cn(...inputs) {
+    return twMerge(clsx(inputs));
+}
+
 const YOUTUBE_URL_RE = /^(https?:\/\/)?([\w-]*\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)\//i;
 
 export function isYouTubeUrl(value) {
@@ -30,4 +38,23 @@ export function formatViews(n) {
     if (n >= 1_000_000) return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M views';
     if (n >= 1_000) return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K views';
     return n + ' views';
+}
+
+export function formatBytes(bytes) {
+    const b = Number(bytes);
+    if (!b || b <= 0) return null;
+    if (b >= 1024 * 1024 * 1024) return (b / (1024 * 1024 * 1024)).toFixed(1) + ' GB';
+    if (b >= 1024 * 1024) return (b / (1024 * 1024)).toFixed(1) + ' MB';
+    if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+    return b + ' B';
+}
+
+// Map a yt-dlp audio codec to a friendly label.
+export function audioCodecName(acodec) {
+    if (!acodec) return '';
+    const a = String(acodec);
+    if (/mp4a/.test(a)) return 'AAC';
+    if (/opus/i.test(a)) return 'Opus';
+    if (/vorbis/i.test(a)) return 'Vorbis';
+    return a.toUpperCase();
 }

@@ -1,10 +1,12 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
-// The Express backend (server.js) exposes /info and /download on port 3000.
-// During development Vite runs on 5173 and proxies those calls to the API.
+// The Express backend (server.js) exposes the API on port 3000.
+// During development Vite runs on 5173; the frontend calls the API directly
+// (see `API` in Downloader.jsx), so no proxy is needed for file transfers.
 export default defineConfig({
-    plugins: [react()],
+    plugins: [react(), tailwindcss()],
     build: {
         outDir: 'dist',
         sourcemap: false,
@@ -12,9 +14,5 @@ export default defineConfig({
     server: {
         port: 5173,
         strictPort: true, // fail loudly instead of silently moving to another port
-        proxy: {
-            '/info': 'http://localhost:3000',
-            '/download': 'http://localhost:3000',
-        },
     },
 });
