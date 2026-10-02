@@ -19,6 +19,20 @@ npm install
 
 This installs everything, including the bundled `yt-dlp` and `ffmpeg` binaries — no system installs needed.
 
+## Environment Variables
+
+Copy `.env.example` to `.env` if you need custom settings:
+
+```bash
+cp .env.example .env
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `PORT` | `3000` | Port for the Express server. Cloud hosts (e.g., Render, Railway) populate this automatically. |
+| `NODE_ENV` | `production` | Node environment (`development` or `production`). |
+| `VITE_API_URL` | *(empty)* | Optional. Leave empty when frontend & backend are served together on the same host (`npm start`). If the frontend is hosted on a separate service (e.g., Vercel), set this to your live backend URL (e.g., `https://api.yourdomain.com`). |
+
 ## Run
 
 ### Option A — One command, everything on port 3000 (recommended)

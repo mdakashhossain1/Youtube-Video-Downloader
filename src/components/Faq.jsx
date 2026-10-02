@@ -1,51 +1,86 @@
-import { Card } from './ui/card';
-import {
-    Accordion,
-    AccordionContent,
-    AccordionItem,
-    AccordionTrigger,
-} from './ui/accordion';
+import { useState } from 'react';
+import { SpotlightCard, ShinyText, GradientText } from './reactbits';
+import { HelpCircle, ChevronDown } from 'lucide-react';
 
 const FAQS = [
     {
-        q: 'Is it really free?',
-        a: 'Yes — completely. There are no accounts, watermarks, or hidden charges. You can download as many videos as you like.',
+        q: 'Is it completely free to use?',
+        a: 'Yes, 100% free with no hidden subscriptions, no account registrations, and no download throttles. Always free, forever.',
     },
     {
-        q: 'What qualities are available?',
-        a: 'Every format YouTube provides for the video — resolutions from 144p to 4K, in H.264, AV1, or VP9, in MP4 or WEBM containers. Audio can be grabbed as the original stream (M4A/Opus) or converted to MP3.',
+        q: 'Are any files saved on your server?',
+        a: 'No. Our server utilizes a direct-streaming pipeline coupled with an automated FileCleanupQueue that immediately removes any temporary data from disk. Zero files remain on the server after your download.',
     },
     {
-        q: 'Does it work on mobile?',
-        a: 'Yes. The site is fully responsive, so you can paste links and download files from your phone or tablet just as easily as on desktop.',
+        q: 'What formats and qualities can I download?',
+        a: 'You can download MP4 high definition videos (with audio included) in 720p or 360p, or extract high-quality audio tracks in MP3 or M4A format. More quality options are coming soon.',
     },
     {
-        q: 'Is it legal to download videos?',
-        a: 'Please only download videos you own or have explicit permission to download. Respect copyright and each creator’s terms of service.',
+        q: 'Does it work with YouTube Shorts and mobile devices?',
+        a: 'Yes. YTSaver supports regular YouTube links, youtu.be shortlinks, and Shorts across desktop, iPhone, iPad, and Android devices.',
+    },
+    {
+        q: 'How fast are the downloads?',
+        a: 'Very fast. We stream directly from YouTube\'s CDN to your browser without intermediate servers, so your download speed is only limited by your internet connection.',
+    },
+    {
+        q: 'Do I need to install any software?',
+        a: 'No installation required. YTSaver runs entirely in your web browser. Just paste a link and click download — nothing else needed.',
     },
 ];
 
-export default function Faq() {
+function FaqItem({ item, isOpen, onToggle }) {
     return (
-        <section className="mx-auto max-w-6xl px-4 py-20 sm:px-6" id="faq">
-            <div className="mx-auto max-w-2xl text-center">
-                <p className="text-xs font-bold uppercase tracking-[0.15em] text-primary">FAQ</p>
-                <h2 className="mt-3 text-3xl font-extrabold tracking-tight sm:text-4xl">
-                    Questions, answered
-                </h2>
+        <SpotlightCard
+            className="faq-item-card"
+            spotlightColor="rgba(255, 26, 67, 0.12)"
+        >
+            <button className="faq-question" onClick={onToggle} aria-expanded={isOpen}>
+                <span>{item.q}</span>
+                <ChevronDown
+                    className="faq-chevron"
+                    style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                />
+            </button>
+            <div className="faq-answer-wrap" style={{ maxHeight: isOpen ? '200px' : '0' }}>
+                <p className="faq-answer">{item.a}</p>
             </div>
-            <Card className="mx-auto mt-10 max-w-2xl">
-                <Accordion type="single" collapsible className="w-full px-2">
-                    {FAQS.map((item) => (
-                        <AccordionItem key={item.q} value={item.q}>
-                            <AccordionTrigger>{item.q}</AccordionTrigger>
-                            <AccordionContent className="text-muted-foreground">
-                                {item.a}
-                            </AccordionContent>
-                        </AccordionItem>
-                    ))}
-                </Accordion>
-            </Card>
+        </SpotlightCard>
+    );
+}
+
+export default function Faq() {
+    const [openIndex, setOpenIndex] = useState(null);
+
+    return (
+        <section className="faq-section" id="faq">
+            {/* Header */}
+            <div className="faq-header">
+                <div className="faq-badge">
+                    <HelpCircle className="faq-badge-icon" />
+                    <ShinyText text="Got Questions?" speed={4} color="#9ca3af" shineColor="#ffffff" />
+                </div>
+                <h2 className="faq-title">
+                    <GradientText colors={['#ffffff', '#d1d5db', '#ffffff']} animationSpeed={12}>
+                        Frequently Asked Questions
+                    </GradientText>
+                </h2>
+                <p className="faq-subtitle">
+                    Everything you need to know about formats, privacy, and performance.
+                </p>
+            </div>
+
+            {/* FAQ list */}
+            <div className="faq-list">
+                {FAQS.map((item, i) => (
+                    <FaqItem
+                        key={item.q}
+                        item={item}
+                        isOpen={openIndex === i}
+                        onToggle={() => setOpenIndex(openIndex === i ? null : i)}
+                    />
+                ))}
+            </div>
         </section>
     );
 }

@@ -1,0 +1,22 @@
+{
+  "name": "YTSaver — YouTube Video & Audio Downloader",
+  "short_name": "YTSaver",
+  "description": "Free, fast, secure YouTube video and audio downloader. Save MP4 videos and MP3 tracks with zero server storage.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F1117",
+  "theme_color": "#FF0033",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "64x64",
+      "type": "image/svg+xml"
+    }
+  ]
+}

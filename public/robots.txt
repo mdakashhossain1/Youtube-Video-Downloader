@@ -1,0 +1,46 @@
+# ==============================================================================
+# Robots.txt for YTSaver (viedown.com)
+# Configured for Search Engines & AI Search Agents (Agent SEO)
+# ==============================================================================
+
+User-agent: *
+Allow: /
+Disallow: /download
+Disallow: /formats
+Disallow: /prepare
+Disallow: /api/
+
+# Major Search Engine Bots
+User-agent: Googlebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
+User-agent: Applebot
+Allow: /
+
+User-agent: YandexBot
+Allow: /
+
+User-agent: DuckDuckBot
+Allow: /
+
+# AI Search & Crawling Agents
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+# Sitemap Location
+Sitemap: https://viedown.com/sitemap.xml

@@ -3,11 +3,146 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Free, fast, secure YouTube video downloader. Paste a link and save any video as MP4 or MP3 — no sign-up, no watermark, no limits.">
-    <title>YTSaver — YouTube Video Downloader (MP4 &amp; MP3)</title>
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+
+    <!-- ── Primary SEO Meta Tags ─────────────────────────────────────────── -->
+    <title>YTSaver — Free YouTube Video Downloader (MP4 &amp; MP3)</title>
+    <meta name="title" content="YTSaver — Free YouTube Video Downloader (MP4 &amp; MP3)">
+    <meta name="description" content="Fast, free, and secure YouTube video downloader. Save high-definition MP4 videos (720p/1080p) or extract crystal-clear MP3 audio directly. No sign-up, zero server storage.">
+    <meta name="keywords" content="youtube video downloader, download youtube video, youtube to mp4, youtube to mp3, youtube audio downloader, free video downloader, online video converter, youtube shorts downloader, high quality video download, fast youtube downloader, ytsaver, viedown">
+    <meta name="author" content="YTSaver">
+    <link rel="canonical" href="https://viedown.com/">
+
+    <!-- ── Search Engine & AI Agent Crawling Directives ──────────────────── -->
+    <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
+    <meta name="googlebot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta name="bingbot" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
+    <meta name="rating" content="general">
+    <meta name="revisit-after" content="1 days">
+
+    <!-- ── Favicon & Brand Icons (Public Directory) ───────────────────────── -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    <link rel="alternate icon" href="/favicon.svg">
+    <link rel="apple-touch-icon" href="/icon.svg">
+    <link rel="manifest" href="/site.webmanifest">
+    <meta name="theme-color" content="#0F1117">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="YTSaver">
+
+    <!-- ── Open Graph / Facebook / Discord ───────────────────────────────── -->
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="YTSaver">
+    <meta property="og:url" content="https://viedown.com/">
+    <meta property="og:title" content="YTSaver — Free YouTube Video Downloader (MP4 &amp; MP3)">
+    <meta property="og:description" content="Download YouTube videos in MP4 (720p/1080p) or extract MP3 audio directly. Fast, free, and zero server storage.">
+    <meta property="og:image" content="https://viedown.com/og-image.svg">
+    <meta property="og:image:type" content="image/svg+xml">
+    <meta property="og:image:width" content="1200">
+    <meta property="og:image:height" content="630">
+    <meta property="og:image:alt" content="YTSaver - YouTube Video Downloader">
+    <meta property="og:locale" content="en_US">
+
+    <!-- ── Twitter Cards ─────────────────────────────────────────────────── -->
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:url" content="https://viedown.com/">
+    <meta name="twitter:title" content="YTSaver — Free YouTube Video Downloader (MP4 &amp; MP3)">
+    <meta name="twitter:description" content="Download YouTube videos in MP4 (720p/1080p) or extract MP3 audio directly. Fast, free, and zero server storage.">
+    <meta name="twitter:image" content="https://viedown.com/og-image.svg">
+
+    <!-- ── Typography Preconnect ─────────────────────────────────────────── -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+
+    <!-- ── Schema.org Structured Data (JSON-LD) for Search & Agent SEO ──── -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@graph": [
+        {
+          "@type": "WebApplication",
+          "@id": "https://viedown.com/#app",
+          "name": "YTSaver",
+          "url": "https://viedown.com/",
+          "applicationCategory": "MultimediaApplication",
+          "operatingSystem": "All",
+          "browserRequirements": "Requires JavaScript. Requires HTML5.",
+          "description": "Free web-based YouTube video and audio downloader with direct streaming and zero server storage.",
+          "offers": {
+            "@type": "Offer",
+            "price": "0",
+            "priceCurrency": "USD"
+          },
+          "featureList": [
+            "Download YouTube videos in high definition (720p/1080p) MP4",
+            "Extract high-quality audio in MP3 and M4A formats",
+            "Direct stream processing without saving files to server",
+            "Automated internal file cleanup queue",
+            "Supports YouTube Shorts and standard video links",
+            "No account or installation required"
+          ]
+        },
+        {
+          "@type": "WebSite",
+          "@id": "https://viedown.com/#website",
+          "url": "https://viedown.com/",
+          "name": "YTSaver",
+          "description": "High Quality YouTube Video & Audio Downloader",
+          "potentialAction": {
+            "@type": "SearchAction",
+            "target": "https://viedown.com/?url={search_term_string}",
+            "query-input": "required name=search_term_string"
+          }
+        },
+        {
+          "@type": "Organization",
+          "@id": "https://viedown.com/#organization",
+          "name": "YTSaver",
+          "url": "https://viedown.com/",
+          "logo": "https://viedown.com/logo.svg"
+        },
+        {
+          "@type": "FAQPage",
+          "@id": "https://viedown.com/#faq",
+          "mainEntity": [
+            {
+              "@type": "Question",
+              "name": "Is it completely free to use?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes, 100% free with no hidden paywalls, no account registrations, and no limits on downloads."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Are any files saved on your server?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "No. Our server utilizes a direct-streaming pipeline coupled with an automated FileCleanupQueue that immediately removes any temporary data from disk. Zero files remain on the server."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "What formats can I download?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "You can download MP4 high definition videos (with audio included) or audio tracks in MP3/M4A format."
+              }
+            },
+            {
+              "@type": "Question",
+              "name": "Does it work with YouTube Shorts and mobile devices?",
+              "acceptedAnswer": {
+                "@type": "Answer",
+                "text": "Yes. YTSaver supports regular YouTube links, youtu.be shortlinks, and Shorts across desktop and mobile devices."
+              }
+            }
+          ]
+        }
+      ]
+    }
+    </script>
 </head>
 <body>
     <div id="root"></div>

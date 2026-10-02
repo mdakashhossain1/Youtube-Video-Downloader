@@ -3,52 +3,39 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* ============ shadcn/ui theme tokens (dark, red accent) ============ */
+/* ============ Typography & Design Tokens ============ */
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@500;600;700;800;900&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+
 :root {
-    --radius: 0.75rem;
+    --radius: 1rem;
 
-    --background: oklch(0.16 0.01 264); /* deep near-black with a cool tint */
-    --foreground: oklch(0.97 0.003 264);
+    --background: #0B0D14; /* Deep, luxury obsidian black */
+    --foreground: #F8FAFC;
 
-    --card: oklch(0.2 0.012 264);
-    --card-foreground: oklch(0.97 0.003 264);
+    --card: #121520;
+    --card-foreground: #F8FAFC;
 
-    --popover: oklch(0.19 0.01 264);
-    --popover-foreground: oklch(0.97 0.003 264);
+    --popover: #121520;
+    --popover-foreground: #F8FAFC;
 
-    --primary: oklch(0.64 0.22 27); /* YouTube red */
-    --primary-foreground: oklch(0.99 0 0);
+    --primary: #FF1A43; /* Electric YouTube Crimson */
+    --primary-foreground: #FFFFFF;
 
-    --secondary: oklch(0.26 0.014 264);
-    --secondary-foreground: oklch(0.97 0.003 264);
+    --secondary: #1A1F2E;
+    --secondary-foreground: #F8FAFC;
 
-    --muted: oklch(0.24 0.012 264);
-    --muted-foreground: oklch(0.72 0.014 264);
+    --muted: #161B28;
+    --muted-foreground: #94A3B8;
 
-    --accent: oklch(0.28 0.03 27);
-    --accent-foreground: oklch(0.97 0.003 264);
+    --accent: #22293D;
+    --accent-foreground: #F8FAFC;
 
-    --destructive: oklch(0.64 0.2 25);
-    --destructive-foreground: oklch(0.99 0 0);
+    --destructive: #EF4444;
+    --destructive-foreground: #FFFFFF;
 
-    --border: oklch(0.27 0.012 264);
-    --input: oklch(0.28 0.012 264);
-    --ring: oklch(0.64 0.22 27);
-
-    --chart-1: oklch(0.64 0.22 27);
-    --chart-2: oklch(0.7 0.15 220);
-    --chart-3: oklch(0.75 0.15 160);
-    --chart-4: oklch(0.78 0.15 90);
-    --chart-5: oklch(0.72 0.16 290);
-
-    --sidebar: oklch(0.19 0.01 264);
-    --sidebar-foreground: oklch(0.97 0.003 264);
-    --sidebar-primary: oklch(0.64 0.22 27);
-    --sidebar-primary-foreground: oklch(0.99 0 0);
-    --sidebar-accent: oklch(0.26 0.012 264);
-    --sidebar-accent-foreground: oklch(0.97 0.003 264);
-    --sidebar-border: oklch(0.27 0.012 264);
-    --sidebar-ring: oklch(0.64 0.22 27);
+    --border: rgba(255, 255, 255, 0.08);
+    --input: rgba(255, 255, 255, 0.09);
+    --ring: #FF1A43;
 }
 
 @theme inline {
@@ -71,12 +58,13 @@
     --color-border: var(--border);
     --color-input: var(--input);
     --color-ring: var(--ring);
-    --radius-sm: calc(var(--radius) - 4px);
-    --radius-md: calc(var(--radius) - 2px);
-    --radius-lg: var(--radius);
-    --radius-xl: calc(var(--radius) + 4px);
+    --radius-sm: 0.5rem;
+    --radius-md: 0.75rem;
+    --radius-lg: 1rem;
+    --radius-xl: 1.5rem;
 }
 
+/* ============ Base Layer ============ */
 @layer base {
     * {
         border-color: var(--border);
@@ -89,19 +77,64 @@
     body {
         background-color: var(--background);
         color: var(--foreground);
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial,
-            sans-serif;
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
         -webkit-font-smoothing: antialiased;
         text-rendering: optimizeLegibility;
         background-image:
-            radial-gradient(1100px 700px at 85% -10%, oklch(0.64 0.22 27 / 0.14), transparent 60%),
-            radial-gradient(900px 650px at -10% 8%, oklch(0.7 0.15 220 / 0.1), transparent 55%),
-            radial-gradient(700px 500px at 50% 110%, oklch(0.75 0.15 45 / 0.07), transparent 60%);
+            radial-gradient(1000px 600px at 50% -5%, rgba(255, 26, 67, 0.12), transparent 70%),
+            radial-gradient(800px 500px at 100% 25%, rgba(249, 115, 22, 0.06), transparent 60%),
+            radial-gradient(700px 500px at 0% 50%, rgba(139, 92, 246, 0.05), transparent 60%);
         background-attachment: fixed;
     }
 
-    ::selection {
-        background-color: oklch(0.64 0.22 27 / 0.4);
-        color: var(--foreground);
+    h1, h2, h3, .font-heading {
+        font-family: 'Outfit', 'Plus Jakarta Sans', sans-serif;
+        letter-spacing: -0.025em;
     }
+
+    ::selection {
+        background-color: rgba(255, 26, 67, 0.35);
+        color: #FFFFFF;
+    }
+}
+
+/* ============ React Bits Keyframe Animations ============ */
+@keyframes shiny-sweep {
+    0% {
+        background-position: 200% 0;
+    }
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+.animate-shiny-sweep {
+    animation: shiny-sweep 4s linear infinite;
+}
+
+@keyframes gradientMove {
+    0% {
+        background-position: 0% 50%;
+    }
+    50% {
+        background-position: 100% 50%;
+    }
+    100% {
+        background-position: 0% 50%;
+    }
+}
+
+/* Sleek subtle scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+::-webkit-scrollbar-track {
+    background: #0B0D14;
+}
+::-webkit-scrollbar-thumb {
+    background: #1E2333;
+    border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #2D3748;
 }

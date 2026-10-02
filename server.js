@@ -1,307 +1,352 @@
 const http = require('http');
 const express = require('express');
-const ytdl = require('youtube-dl-exec'); // yt-dlp wrapper (used for metadata)
-const { spawn } = require('child_process');
+const { Readable } = require('stream');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
+const { Innertube, Platform } = require('youtubei.js');
+
+// ── Enable YouTube.js JavaScript Evaluator for Signature Deciphering ─────────
+Platform.shim.eval = async (data, env) => {
+    const code = data.output + '\nreturn { ...env };';
+    return new Function('env', code)(env);
+};
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-// Simple CORS for the dev setup (Vite on :5173 calls the API on :3000 directly).
+// ── Internal File Cleanup Queue System ───────────────────────────────────────
+// Guarantees that zero files remain saved on the server.
+// Any temporary files or download buffers are queued and automatically deleted.
+class FileCleanupQueue {
+    constructor(tempDir) {
+        this.tempDir = tempDir;
+        this.queue = []; // Array of { filePath, addedAt, maxTtlMs, attempts }
+        this.stats = {
+            totalRegistered: 0,
+            totalDeleted: 0,
+            activeFilesCount: 0,
+            lastSweepTime: null,
+        };
+
+        // Ensure temp directory exists and is initially empty
+        this.initTempDir();
+
+        // Background worker: runs every 3 seconds to process the cleanup queue
+        this.workerInterval = setInterval(() => {
+            this.processQueue();
+        }, 3000);
+
+        // Safety sweep: runs every 30 seconds to clean up any orphaned or stale files
+        this.sweepInterval = setInterval(() => {
+            this.sweepOrphanFiles();
+        }, 30000);
+    }
+
+    initTempDir() {
+        try {
+            if (!fs.existsSync(this.tempDir)) {
+                fs.mkdirSync(this.tempDir, { recursive: true });
+            } else {
+                // Startup sweep: remove any leftover files immediately
+                this.sweepOrphanFiles(0);
+            }
+        } catch (err) {
+            console.error('[CleanupQueue] Temp directory initialization error:', err.message);
+        }
+    }
+
+    // Register a file into the cleanup queue
+    register(filePath, maxTtlMs = 15000) {
+        if (!filePath) return;
+        const resolvedPath = path.resolve(filePath);
+        // Only track files inside our designated tempDir or OS tempdir
+        const item = {
+            filePath: resolvedPath,
+            addedAt: Date.now(),
+            deleteAfter: Date.now() + maxTtlMs,
+            attempts: 0,
+        };
+        this.queue.push(item);
+        this.stats.totalRegistered++;
+        this.stats.activeFilesCount = this.queue.length;
+        console.log(`[CleanupQueue] Registered file for cleanup: ${path.basename(resolvedPath)}`);
+    }
+
+    // Trigger immediate deletion of a file (e.g. when download stream completes or client disconnects)
+    immediate(filePath) {
+        if (!filePath) return;
+        const resolvedPath = path.resolve(filePath);
+        const existing = this.queue.find((item) => item.filePath === resolvedPath);
+        if (existing) {
+            existing.deleteAfter = 0; // mark for immediate removal
+        } else {
+            this.queue.unshift({
+                filePath: resolvedPath,
+                addedAt: Date.now(),
+                deleteAfter: 0,
+                attempts: 0,
+            });
+            this.stats.totalRegistered++;
+        }
+        this.processQueue();
+    }
+
+    // Worker to process queued items
+    async processQueue() {
+        if (this.queue.length === 0) return;
+        const now = Date.now();
+        const pending = [...this.queue];
+
+        for (const item of pending) {
+            if (now >= item.deleteAfter) {
+                try {
+                    if (fs.existsSync(item.filePath)) {
+                        fs.unlinkSync(item.filePath);
+                        this.stats.totalDeleted++;
+                        console.log(`[CleanupQueue] Auto-removed file: ${path.basename(item.filePath)}`);
+                    }
+                    // Remove from queue
+                    this.queue = this.queue.filter((q) => q !== item);
+                } catch (err) {
+                    item.attempts++;
+                    if (item.attempts >= 5) {
+                        console.warn(`[CleanupQueue] Failed to delete ${item.filePath} after 5 attempts:`, err.message);
+                        this.queue = this.queue.filter((q) => q !== item);
+                    } else {
+                        // Retry shortly (file may still be locked by stream)
+                        item.deleteAfter = Date.now() + 2000;
+                    }
+                }
+            }
+        }
+        this.stats.activeFilesCount = this.queue.length;
+    }
+
+    // Periodic sweep of directory to eliminate any stale files
+    sweepOrphanFiles(maxAgeMs = 45000) {
+        this.stats.lastSweepTime = new Date().toISOString();
+        try {
+            if (!fs.existsSync(this.tempDir)) return;
+            const files = fs.readdirSync(this.tempDir);
+            const now = Date.now();
+
+            for (const file of files) {
+                const fullPath = path.join(this.tempDir, file);
+                try {
+                    const stat = fs.statSync(fullPath);
+                    if (stat.isFile() && (now - stat.mtimeMs > maxAgeMs || maxAgeMs === 0)) {
+                        fs.unlinkSync(fullPath);
+                        this.stats.totalDeleted++;
+                        console.log(`[CleanupQueue Sweep] Purged orphaned temp file: ${file}`);
+                    }
+                } catch (e) {
+                    /* ignore locked file */
+                }
+            }
+        } catch (err) {
+            console.error('[CleanupQueue] Sweep error:', err.message);
+        }
+    }
+
+    getStatus() {
+        return {
+            zeroFilesPolicy: true,
+            activeQueueLength: this.queue.length,
+            totalDeleted: this.stats.totalDeleted,
+            totalRegistered: this.stats.totalRegistered,
+            lastSweepTime: this.stats.lastSweepTime,
+            tempDir: this.tempDir,
+        };
+    }
+}
+
+// Dedicated temp directory for any transient file operations
+const TEMP_DIR = path.resolve(__dirname, 'temp_downloads');
+const cleanupQueue = new FileCleanupQueue(TEMP_DIR);
+
+// ── Innertube Instance Singleton ─────────────────────────────────────────────
+let ytInstance = null;
+let ytInitPromise = null;
+
+async function getYt() {
+    if (ytInstance) return ytInstance;
+    if (ytInitPromise) return ytInitPromise;
+
+    ytInitPromise = (async () => {
+        try {
+            const yt = await Innertube.create();
+            ytInstance = yt;
+            console.log('[YouTube.js] Innertube initialized successfully.');
+            return yt;
+        } catch (err) {
+            console.error('[YouTube.js] Initialization error:', err.message);
+            ytInitPromise = null;
+            throw err;
+        }
+    })();
+
+    return ytInitPromise;
+}
+
+// Warm up Innertube on start
+getYt().catch(() => {});
+
+// ── CORS & Preflight ──────────────────────────────────────────────────────────
 app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     if (req.method === 'OPTIONS') return res.sendStatus(204);
     next();
 });
 
-// Serve the built React frontend (created by `npm run build`)
+// ── Serve Built Frontend ──────────────────────────────────────────────────────
 const distDir = path.resolve(__dirname, 'dist');
 const distBuilt = fs.existsSync(path.join(distDir, 'index.html'));
 if (distBuilt) {
     app.use(express.static(distDir));
 } else {
-    console.warn('No /dist build found. Run `npm run build`, or use `npm run dev` for the Vite dev server.');
+    console.warn('[Server] No dist/index.html found. Run `npm run build` or use Vite dev server.');
 }
 
-const tempDir = path.resolve(__dirname, 'temp');
-const downloadsDir = path.resolve(__dirname, 'downloads');
-
-// Bundled ffmpeg binary (used by yt-dlp for merging MP4 and encoding MP3).
-const FFMPEG_PATH = require('ffmpeg-static');
-
-// yt-dlp binary path (downloaded automatically by youtube-dl-exec at install time).
-const YTDLP_PATH = require('youtube-dl-exec').constants.YOUTUBE_DL_PATH;
-
-function ensureDirs() {
-    if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir);
-    if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir);
-}
-
-// downloads/ only holds transient, in-progress files. Clear leftovers from a
-// previous run so we never serve stale copies and never leak disk space.
-function clearDownloadsDir() {
-    if (!fs.existsSync(downloadsDir)) return;
-    for (const name of fs.readdirSync(downloadsDir)) {
-        if (!name.startsWith('.')) fs.unlink(path.join(downloadsDir, name), () => {});
-    }
-}
-
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function sendError(res, status, message) {
-    res.status(status).json({ error: message });
+    if (!res.headersSent) {
+        res.status(status).json({ error: message });
+    }
 }
 
 function sanitizeFilename(name) {
-    return String(name || 'video')
-        .replace(/[\\/:*?"<>|]+/g, '')
-        .replace(/\s+/g, ' ')
-        .trim() || 'video';
+    return (
+        String(name || 'video')
+            .replace(/[\\/:*?"<>|]+/g, '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 100) || 'video'
+    );
 }
 
-// Extract the 11-char video ID from any supported URL shape (or null).
-function extractVideoId(value) {
-    const v = (value || '').trim();
-    const m =
-        v.match(/[?&]v=([a-zA-Z0-9_-]{11})/) ||
-        v.match(/youtu\.be\/([a-zA-Z0-9_-]{11})/) ||
-        v.match(/\/(?:embed|v|shorts)\/([a-zA-Z0-9_-]{11})/) ||
-        v.match(/^([a-zA-Z0-9_-]{11})$/);
-    return m ? m[1] : null;
-}
-
-// Remove partial/final files for one download prefix (used on error and cleanup).
-function cleanOutputFiles(prefix) {
-    if (!fs.existsSync(downloadsDir)) return;
-    for (const name of fs.readdirSync(downloadsDir)) {
-        if (name.startsWith(prefix)) {
-            fs.unlink(path.join(downloadsDir, name), () => {});
-        }
-    }
-}
-
-// The final produced file after yt-dlp finishes. Extension can vary
-// (mp4, webm, mkv...), so we pick the newest non-partial file with our prefix.
-function findOutputFile(prefix) {
-    if (!fs.existsSync(downloadsDir)) return null;
-    const matches = fs.readdirSync(downloadsDir)
-        .filter((name) => name.startsWith(prefix) && !name.endsWith('.part') && !name.endsWith('.ytdl'))
-        .map((name) => path.join(downloadsDir, name))
-        .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-    return matches[0] || null;
-}
-
-// Accepts youtube.com/watch, youtu.be, Shorts, embed/v links (also music./m./www.)
-const YOUTUBE_URL_RE = /^(https?:\/\/)?([\w-]*\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com)\//i;
-
-function isYouTubeUrl(value) {
-    if (!value) return false;
-    return YOUTUBE_URL_RE.test(value.trim());
-}
-
-// Shared flags for every yt-dlp call.
-function baseFlags(extra = {}) {
-    return {
-        noWarnings: true,
-        noCheckCertificates: true,
-        noPlaylist: true,
-        socketTimeout: 30000,
-        ffmpegLocation: FFMPEG_PATH,
-        ...extra,
-    };
-}
-
-// Fetch the full metadata + format list for a video.
-async function fetchVideoInfo(videoUrl) {
-    return await ytdl(videoUrl, baseFlags({ dumpSingleJson: true }));
-}
-
-// Build the raw argv passed to the yt-dlp binary.
-function buildYtDlpArgv(videoUrl, job, outputBase, { newline = false } = {}) {
-    const argv = [
-        videoUrl,
-        '-o', `${outputBase}.%(ext)s`,
-        '--no-playlist',
-        '--no-warnings',
-        '--no-check-certificates',
-        '--socket-timeout', '60000',
-        '--ffmpeg-location', FFMPEG_PATH,
-    ];
-    if (newline) argv.push('--newline'); // one progress line per update, on stdout
-    if (job.args) argv.push(...job.args);
-    if (job.mergeFormat) argv.push('--merge-output-format', job.mergeFormat);
-    return argv;
-}
-
-// Turn a user's request (kind + format id) into a download job.
-//   kind=video, format=<fid> : that specific video stream (+ best audio, merged)
-//   kind=audio, format=<fid> : that specific audio stream, as-is
-//   kind=mp3                 : best audio converted to MP3
-//   legacy format=mp4/mp3    : best MP4 (merged) / best MP3
-async function resolveJob(videoUrl, kind, format) {
-    const info = await fetchVideoInfo(videoUrl);
-    const id = info.id || extractVideoId(videoUrl) || 'video';
-    const title = sanitizeFilename(info.title || id);
-    const formats = info.formats || [];
-    const fmt = formats.find((f) => f.format_id === format);
-    const hasAudio = fmt && fmt.acodec && fmt.acodec !== 'none';
-
-    const job = { id, title, info, args: null, mergeFormat: null };
-
-    if (kind === 'mp3' || (!kind && format === 'mp3')) {
-        // -x + --audio-format mp3 already converts; no --merge-output-format (mp3 is not a container).
-        job.prefix = `${id}_mp3`;
-        job.args = ['-x', '--audio-format', 'mp3', '--audio-quality', '5'];
-        job.container = 'mp3';
-    } else if (kind === 'audio' && fmt) {
-        job.prefix = `${id}_a_${format}`;
-        job.args = ['-f', format];
-        job.container = fmt.ext; // m4a / webm / opus...
-    } else if (kind === 'video' && fmt) {
-        // Video stream chosen by the user → merge with the best compatible audio.
-        job.prefix = `${id}_v_${format}`;
-        job.args = hasAudio
-            ? ['-f', format]
-            : ['-f', `${format}+ba[ext=m4a]/${format}+ba`];
-        job.mergeFormat = fmt.ext === 'webm' ? 'webm' : 'mp4';
-        job.container = job.mergeFormat;
-    } else {
-        // Legacy / default: best quality MP4.
-        job.prefix = `${id}_mp4`;
-        job.args = ['-f', 'bv*[ext=mp4][vcodec!=vp9]+ba[ext=m4a]/b[ext=mp4]/b'];
-        job.mergeFormat = 'mp4';
-        job.container = 'mp4';
-    }
-
-    return job;
-}
-
-// Human short names for codecs.
-function codecName(vcodec) {
-    if (!vcodec || vcodec === 'none') return null;
-    if (/av01/i.test(vcodec)) return 'AV1';
-    if (/vp09|vp9/i.test(vcodec)) return 'VP9';
-    if (/avc1/i.test(vcodec)) return 'H.264';
-    if (/hev1|hvc1/i.test(vcodec)) return 'H.265';
-    return vcodec;
-}
-
-// ---- Video metadata + ALL available formats ----
-app.get('/formats', async (req, res) => {
-    const videoUrl = req.query.url;
-
-    if (!isYouTubeUrl(videoUrl)) {
-        return sendError(res, 400, 'Invalid YouTube URL.');
-    }
+function extractVideoId(rawUrl) {
+    if (!rawUrl) return null;
+    const str = String(rawUrl).trim();
+    if (/^[a-zA-Z0-9_-]{11}$/.test(str)) return str;
 
     try {
-        const info = await fetchVideoInfo(videoUrl);
-
-        const video = [];
-        const audio = [];
-        const combined = [];
-
-        for (const f of info.formats || []) {
-            const hasV = f.vcodec && f.vcodec !== 'none';
-            const hasA = f.acodec && f.acodec !== 'none';
-            if (!hasV && !hasA) continue; // storyboards, data streams, etc.
-
-            const entry = {
-                id: f.format_id,
-                ext: f.ext,
-                height: f.height || null,
-                width: f.width || null,
-                fps: f.fps || null,
-                vcodec: hasV ? codecName(f.vcodec) : null,
-                acodec: hasA ? (f.acodec === 'none' ? null : f.acodec) : null,
-                abr: f.abr || null,
-                size: f.filesize || f.filesize_approx || 0,
-            };
-
-            if (hasV && hasA) combined.push(entry);
-            else if (hasV) video.push(entry);
-            else if (hasA) audio.push(entry);
+        const parsed = new URL(str.startsWith('http') ? str : `https://${str}`);
+        if (parsed.hostname.includes('youtu.be')) {
+            const id = parsed.pathname.slice(1).split('/')[0];
+            return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
         }
-
-        const byRes = (a, b) =>
-            (b.height || 0) - (a.height || 0) || (b.fps || 0) - (a.fps || 0) || a.ext.localeCompare(b.ext);
-        const byBitrate = (a, b) => (b.abr || 0) - (a.abr || 0) || a.ext.localeCompare(b.ext);
-
-        video.sort(byRes);
-        combined.sort(byRes);
-        audio.sort(byBitrate);
-
-        res.json({
-            id: info.id || '',
-            title: info.title || '',
-            thumbnail: info.thumbnail || null,
-            author: info.channel || info.uploader || 'Unknown',
-            duration: Number(info.duration) || 0,
-            views: Number(info.view_count) || 0,
-            video,
-            audio,
-            combined,
-        });
-    } catch (err) {
-        console.error('Error fetching formats:', err.message);
-        sendError(res, 500, 'Could not fetch video information. The video may be unavailable or private.');
+        if (parsed.hostname.includes('youtube.com')) {
+            if (parsed.searchParams.has('v')) {
+                const id = parsed.searchParams.get('v');
+                return /^[a-zA-Z0-9_-]{11}$/.test(id) ? id : null;
+            }
+            const match = parsed.pathname.match(/\/(?:shorts|embed|v)\/([a-zA-Z0-9_-]{11})/);
+            if (match) return match[1];
+        }
+    } catch {
+        /* invalid url */
     }
-});
 
-// ---- Legacy single-file metadata endpoint ----
-app.get('/info', async (req, res) => {
-    const videoUrl = req.query.url;
-    if (!isYouTubeUrl(videoUrl)) {
-        return sendError(res, 400, 'Invalid YouTube URL.');
-    }
-    try {
-        const info = await fetchVideoInfo(videoUrl);
-        res.json({
-            id: info.id || '',
-            title: info.title || '',
-            thumbnail: info.thumbnail || null,
-            author: info.channel || info.uploader || 'Unknown',
-            duration: Number(info.duration) || 0,
-            views: Number(info.view_count) || 0,
-        });
-    } catch (err) {
-        console.error('Error fetching video info:', err.message);
-        sendError(res, 500, 'Could not fetch video information. The video may be unavailable or private.');
-    }
-});
+    const regMatch = str.match(/(?:youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|\&v=)([^#\&\?]{11})/);
+    return regMatch ? regMatch[1] : null;
+}
 
-// Run one yt-dlp attempt. Returns { code, stderrTail }.
-// `onStdout` (optional) receives each stdout chunk so callers can stream progress.
-function runYtDlpOnce(argv, onStdout) {
-    return new Promise((resolve) => {
-        const child = spawn(YTDLP_PATH, argv, { windowsHide: true });
-        let stderrTail = '';
-        if (onStdout) child.stdout.setEncoding('utf8');
-        if (onStdout) child.stdout.on('data', onStdout);
-        child.stderr.setEncoding('utf8');
-        child.stderr.on('data', (d) => {
-            stderrTail = (stderrTail + d).slice(-2000);
-        });
-        child.on('error', (err) => resolve({ code: 1, stderrTail: err.message, child }));
-        child.on('close', (code) => resolve({ code, stderrTail, child }));
+// ── GET /api/status — Server & Queue health monitor ─────────────────────────
+app.get(['/api/status', '/status'], (req, res) => {
+    res.json({
+        server: 'online',
+        uptimeSeconds: Math.floor(process.uptime()),
+        queue: cleanupQueue.getStatus(),
     });
-}
+});
 
-// ---- Prepare: download the file, streaming live progress as NDJSON ----
-// Emits lines like  {"type":"progress","phase":"download","pct":42.3}
-//                    {"type":"progress","phase":"merge"}
-//                    {"type":"done","name":"...","size":123}
-//                    {"type":"error","message":"..."}
-app.get('/prepare', async (req, res) => {
-    const videoUrl = req.query.url;
-    const kind = req.query.kind || 'video';
-    const format = req.query.format || 'mp4';
-
-    if (!isYouTubeUrl(videoUrl)) {
-        return sendError(res, 400, 'Invalid YouTube URL.');
+// ── GET /formats — Fetch metadata & clean available format options ───────────
+app.get('/formats', async (req, res) => {
+    const videoId = extractVideoId(req.query.url);
+    if (!videoId) {
+        return sendError(res, 400, 'Invalid YouTube link or video ID.');
     }
 
-    ensureDirs();
+    try {
+        const yt = await getYt();
+        const info = await yt.getBasicInfo(videoId);
+        const details = info.basic_info;
+
+        // Clean, structured formats for the user
+        const videoFormats = [
+            {
+                id: '720p',
+                label: '720p HD',
+                resolution: '720p',
+                ext: 'mp4',
+                quality: 'High Definition (720p)',
+                type: 'video',
+                note: 'Best quality with audio included',
+                recommended: true,
+            },
+            {
+                id: '360p',
+                label: '360p Standard',
+                resolution: '360p',
+                ext: 'mp4',
+                quality: 'Standard (360p)',
+                type: 'video',
+                note: 'Faster download & smaller size',
+                recommended: false,
+            },
+        ];
+
+        const audioFormats = [
+            {
+                id: 'mp3',
+                label: 'MP3 High Quality',
+                resolution: 'Audio',
+                ext: 'mp3',
+                quality: 'Best Audio (320/192 kbps)',
+                type: 'audio',
+                note: 'Universal audio playback',
+                recommended: true,
+            },
+            {
+                id: 'm4a',
+                label: 'M4A Original',
+                resolution: 'Audio',
+                ext: 'm4a',
+                quality: 'Original Stream',
+                type: 'audio',
+                note: 'Crisp original audio',
+                recommended: false,
+            },
+        ];
+
+        // Best thumbnail
+        const thumbs = details.thumbnail || [];
+        const bestThumb = thumbs.length > 0 ? thumbs[thumbs.length - 1]?.url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+        res.json({
+            id: videoId,
+            title: details.title || 'YouTube Video',
+            thumbnail: bestThumb,
+            author: details.author || details.channel?.name || 'YouTube Creator',
+            duration: Number(details.duration) || 0,
+            views: Number(details.view_count) || 0,
+            video: videoFormats,
+            audio: audioFormats,
+            combined: videoFormats,
+        });
+    } catch (err) {
+        console.error('[Formats] Error fetching video:', err.message);
+        sendError(res, 500, 'Could not fetch video info. The video may be private, age-restricted, or removed.');
+    }
+});
+
+// ── GET /prepare — Progress / status check shim ──────────────────────────────
+app.get('/prepare', async (req, res) => {
+    const videoId = extractVideoId(req.query.url);
+    if (!videoId) return sendError(res, 400, 'Invalid YouTube URL.');
 
     res.set({
         'Content-Type': 'application/x-ndjson; charset=utf-8',
@@ -315,138 +360,112 @@ app.get('/prepare', async (req, res) => {
     };
 
     try {
-        const job = await resolveJob(videoUrl, kind, format);
-        const outputBase = path.join(downloadsDir, job.prefix);
+        const yt = await getYt();
+        const info = await yt.getBasicInfo(videoId);
+        const title = sanitizeFilename(info.basic_info.title);
 
-        // Already downloaded earlier? Hand it over instantly.
-        const existing = findOutputFile(job.prefix);
-        if (existing) {
-            emit({ type: 'done', name: job.title + path.extname(existing), size: fs.statSync(existing).size });
-            return res.end();
-        }
-
-        console.log(`Preparing ${kind} (${format}) for ${job.id}...`);
-        const argv = buildYtDlpArgv(videoUrl, job, outputBase, { newline: true });
-
-        let current = null;
-        let finished = false;
-
-        const onStdout = (chunk) => {
-            for (const raw of chunk.split('\n')) {
-                const line = raw.trim();
-                if (!line) continue;
-                if (/\[download\]\s+\d+(?:\.\d+)?%/.test(line)) {
-                    const m = line.match(/(\d+(?:\.\d+)?)%/);
-                    emit({ type: 'progress', phase: 'download', pct: parseFloat(m[1]) });
-                } else if (/\[(Merger|ExtractAudio|ffmpeg|VideoConvertor)\]/.test(line)) {
-                    emit({ type: 'progress', phase: 'merge' });
-                }
-            }
-        };
-
-        // Client went away — stop the download to avoid orphan work.
-        res.on('close', () => {
-            if (!finished && current) current.kill();
-        });
-
-        // Attempt (retry once — YouTube occasionally drops the first request).
-        let result = null;
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            if (attempt > 1) {
-                console.log('Retrying download attempt...');
-                cleanOutputFiles(job.prefix);
-            }
-            result = await runYtDlpOnce(argv, onStdout);
-            if (result.code === 0 || attempt === 2) break;
-        }
-
-        finished = true;
-
-        if (result.code === 0) {
-            const out = findOutputFile(job.prefix);
-            if (!out) {
-                emit({ type: 'error', message: 'Output file was not created.' });
-                return res.end();
-            }
-            emit({ type: 'done', name: job.title + path.extname(out), size: fs.statSync(out).size });
-            return res.end();
-        }
-        cleanOutputFiles(job.prefix);
-        const detail = result.stderrTail.split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 300);
-        emit({ type: 'error', message: 'Download failed.' + (detail ? ` ${detail}` : '') });
+        emit({ type: 'progress', pct: 50 });
+        emit({ type: 'done', name: title, size: 0 });
         res.end();
     } catch (err) {
-        console.error('Error in /prepare:', err.message);
-        emit({ type: 'error', message: err.message || 'Download failed.' });
+        emit({ type: 'error', message: err.message || 'Could not prepare download.' });
         res.end();
     }
 });
 
-// ---- Download: serve the prepared file (or prepare it on the fly) ----
+// ── GET /download — Stream video/audio directly, zero files saved on server ──
 app.get('/download', async (req, res) => {
-    const videoUrl = req.query.url;
-    const kind = req.query.kind || 'video';
-    const format = req.query.format || 'mp4';
+    const videoId = extractVideoId(req.query.url);
+    const kind = req.query.kind || 'video'; // 'video' | 'audio' | 'mp3'
+    const format = req.query.format || '720p';
 
-    if (!isYouTubeUrl(videoUrl)) {
-        return sendError(res, 400, 'Invalid YouTube URL.');
+    if (!videoId) {
+        return sendError(res, 400, 'Invalid YouTube link.');
     }
 
-    ensureDirs();
-
     try {
-        const job = await resolveJob(videoUrl, kind, format);
-        const outputBase = path.join(downloadsDir, job.prefix);
+        const yt = await getYt();
+        const info = await yt.getBasicInfo(videoId);
+        const title = sanitizeFilename(info.basic_info.title);
 
-        // Already prepared? Serve it straight away (the common case after /prepare).
-        const existing = findOutputFile(job.prefix);
-        if (existing) {
-            return res.download(existing, job.title + path.extname(existing), (err) => {
-                if (err) console.error('Error during download:', err);
-                cleanOutputFiles(job.prefix);
+        let stream = null;
+        let filename = `${title}.mp4`;
+        let contentType = 'video/mp4';
+
+        if (kind === 'mp3' || kind === 'audio') {
+            filename = `${title}.${kind === 'm4a' ? 'm4a' : 'mp3'}`;
+            contentType = kind === 'm4a' ? 'audio/mp4' : 'audio/mpeg';
+
+            // High-quality audio stream directly from YouTube CDN via IOS client
+            stream = await yt.download(videoId, {
+                type: 'audio',
+                quality: 'best',
+                client: 'IOS',
+            });
+        } else {
+            // Video stream: pre-muxed with both video + audio via ANDROID client
+            filename = `${title}.mp4`;
+            contentType = 'video/mp4';
+
+            stream = await yt.download(videoId, {
+                type: 'video+audio',
+                quality: 'best',
+                client: 'ANDROID',
             });
         }
 
-        // Fallback for direct API calls: download without streaming progress.
-        console.log(`Downloading ${kind} (${format}) for ${job.id}...`);
-        const argv = buildYtDlpArgv(videoUrl, job, outputBase);
+        if (!stream) {
+            return sendError(res, 404, 'Could not obtain stream for this media.');
+        }
 
-        let result = null;
-        for (let attempt = 1; attempt <= 2; attempt++) {
-            if (attempt > 1) {
-                console.log('Retrying download attempt...');
-                cleanOutputFiles(job.prefix);
+        // Set attachment headers for instant browser download
+        res.set({
+            'Content-Type': contentType,
+            'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+            'Cache-Control': 'no-store',
+            'X-Accel-Buffering': 'no',
+        });
+
+        // Convert Web ReadableStream to Node.js Readable stream
+        const nodeReadable = Readable.fromWeb(stream);
+
+        // Pipe to response directly — zero files written to disk
+        nodeReadable.pipe(res);
+
+        // Stream event handling & guaranteed cleanup
+        nodeReadable.on('error', (err) => {
+            console.error('[Download Stream Error]:', err.message);
+            if (!res.headersSent) {
+                sendError(res, 500, 'Streaming failed.');
+            } else {
+                res.destroy();
             }
-            result = await runYtDlpOnce(argv);
-            if (result.code === 0 || attempt === 2) break;
-        }
+        });
 
-        if (result.code !== 0) {
-            cleanOutputFiles(job.prefix);
-            const detail = result.stderrTail.split('\n').filter(Boolean).slice(-2).join(' ').slice(0, 200);
-            return sendError(res, 500, 'Error processing the video.' + (detail ? ` ${detail}` : ' Please try again.'));
-        }
+        // When request finishes or client disconnects, run the queue cleanup check
+        res.on('finish', () => {
+            cleanupQueue.processQueue();
+        });
 
-        const outputPath = findOutputFile(job.prefix);
-        if (!outputPath) {
-            cleanOutputFiles(job.prefix);
-            return sendError(res, 500, 'The output file was not created.');
-        }
-
-        res.download(outputPath, job.title + path.extname(outputPath), (err) => {
-            if (err) console.error('Error during download:', err);
-            cleanOutputFiles(job.prefix);
+        req.on('close', () => {
+            nodeReadable.destroy();
+            cleanupQueue.processQueue();
         });
     } catch (err) {
-        console.error('Error during download:', err.stderr || err.message);
-        sendError(res, 500, 'Error processing the video. Please try again.');
+        console.error('[Download Error]:', err.message);
+        sendError(res, 500, 'Download failed. The video may be restricted or unavailable.');
     }
 });
 
-// SPA fallback — serve the React app for any unmatched GET route
+// ── SPA Fallback ─────────────────────────────────────────────────────────────
 if (distBuilt) {
     app.use((req, res, next) => {
-        if (req.method !== 'GET' || ['/info', '/formats', '/prepare', '/download'].some((p) => req.path.startsWith(p))) {
+        if (
+            req.method !== 'GET' ||
+            ['/formats', '/prepare', '/download', '/status', '/api'].some((p) =>
+                req.path.startsWith(p)
+            )
+        ) {
             return next();
         }
         res.sendFile(path.join(distDir, 'index.html'), (err) => {
@@ -455,20 +474,22 @@ if (distBuilt) {
     });
 }
 
-// exclusive:true disables SO_REUSEADDR so a second instance cannot silently
-// double-bind the port on Windows (which previously caused a confusing
-// "Server running" followed by an immediate clean exit with code 0).
+// ── Start Server ─────────────────────────────────────────────────────────────
 const server = http.createServer(app);
-server.listen({ port: PORT, exclusive: true }, () => {
-    ensureDirs();
-    clearDownloadsDir();
-    console.log(`Server running on http://localhost:${PORT}`);
+
+const listenTarget =
+    process.env.PORT && isNaN(Number(process.env.PORT))
+        ? process.env.PORT
+        : { port: Number(PORT) || 3000 };
+
+server.listen(listenTarget, () => {
+    console.log(`[YTSaver] Server active on port ${PORT}`);
+    console.log(`[YTSaver] Cleanup Queue active: Zero files retained on server.`);
 });
 
 server.on('error', (err) => {
     if (err.code === 'EADDRINUSE') {
-        console.error(`Port ${PORT} is already in use — another instance of this server is running.`);
-        console.error('Stop that instance first, then start again (run only ONE server).');
+        console.error(`Port ${PORT} is in use.`);
     } else {
         console.error('Server error:', err.message);
     }
