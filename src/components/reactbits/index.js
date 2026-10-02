@@ -5,3 +5,5 @@ export { default as ShinyText } from './ShinyText';
 export { default as GradientText } from './GradientText';
 export { default as StarBorder } from './StarBorder';
 export { default as Magnet } from './Magnet';
+export { default as Threads } from './Threads';
+export { default as DecryptedText } from './DecryptedText';

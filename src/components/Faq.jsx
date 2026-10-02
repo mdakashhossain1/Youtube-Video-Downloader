@@ -1,86 +1,15 @@
-import { useState } from 'react';
-import { SpotlightCard, ShinyText, GradientText } from './reactbits';
-import { HelpCircle, ChevronDown } from 'lucide-react';
+import { Plus, ArrowUpRight } from 'lucide-react';
+import { Eyebrow } from './Motion';
+import { Link } from '../context/RouterContext';
 
-const FAQS = [
-    {
-        q: 'Is it completely free to use?',
-        a: 'Yes, 100% free with no hidden subscriptions, no account registrations, and no download throttles. Always free, forever.',
-    },
-    {
-        q: 'Are any files saved on your server?',
-        a: 'No. Our server utilizes a direct-streaming pipeline coupled with an automated FileCleanupQueue that immediately removes any temporary data from disk. Zero files remain on the server after your download.',
-    },
-    {
-        q: 'What formats and qualities can I download?',
-        a: 'You can download MP4 high definition videos (with audio included) in 720p or 360p, or extract high-quality audio tracks in MP3 or M4A format. More quality options are coming soon.',
-    },
-    {
-        q: 'Does it work with YouTube Shorts and mobile devices?',
-        a: 'Yes. YTSaver supports regular YouTube links, youtu.be shortlinks, and Shorts across desktop, iPhone, iPad, and Android devices.',
-    },
-    {
-        q: 'How fast are the downloads?',
-        a: 'Very fast. We stream directly from YouTube\'s CDN to your browser without intermediate servers, so your download speed is only limited by your internet connection.',
-    },
-    {
-        q: 'Do I need to install any software?',
-        a: 'No installation required. YTSaver runs entirely in your web browser. Just paste a link and click download — nothing else needed.',
-    },
+const questions = [
+    ['Is YTSaver free?', 'Yes. You can use the downloader without paying or creating an account.'],
+    ['Which formats can I download?', 'Choose from the video and audio formats returned for your link, including MP4, MP3, and M4A. Available quality depends on the original video.'],
+    ['Does it work with Shorts?', 'Yes. Paste a regular YouTube link, a youtu.be short link, or a YouTube Shorts URL.'],
+    ['Where does my download go?', 'Your browser saves it to your device, usually in the Downloads folder. On mobile, check the Files app or your browser’s download manager.'],
+    ['Why might a video be unavailable?', 'Private, removed, age-restricted, or region-restricted videos may be unavailable. Network issues or upstream changes can also interrupt a download. Try another public video or try again later.'],
+    ['Can I download any video?', 'Only download videos you own or have permission to save. Respect the creator’s rights and the terms that apply to the content.'],
 ];
-
-function FaqItem({ item, isOpen, onToggle }) {
-    return (
-        <SpotlightCard
-            className="faq-item-card"
-            spotlightColor="rgba(255, 26, 67, 0.12)"
-        >
-            <button className="faq-question" onClick={onToggle} aria-expanded={isOpen}>
-                <span>{item.q}</span>
-                <ChevronDown
-                    className="faq-chevron"
-                    style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)' }}
-                />
-            </button>
-            <div className="faq-answer-wrap" style={{ maxHeight: isOpen ? '200px' : '0' }}>
-                <p className="faq-answer">{item.a}</p>
-            </div>
-        </SpotlightCard>
-    );
-}
-
 export default function Faq() {
-    const [openIndex, setOpenIndex] = useState(null);
-
-    return (
-        <section className="faq-section" id="faq">
-            {/* Header */}
-            <div className="faq-header">
-                <div className="faq-badge">
-                    <HelpCircle className="faq-badge-icon" />
-                    <ShinyText text="Got Questions?" speed={4} color="#9ca3af" shineColor="#ffffff" />
-                </div>
-                <h2 className="faq-title">
-                    <GradientText colors={['#ffffff', '#d1d5db', '#ffffff']} animationSpeed={12}>
-                        Frequently Asked Questions
-                    </GradientText>
-                </h2>
-                <p className="faq-subtitle">
-                    Everything you need to know about formats, privacy, and performance.
-                </p>
-            </div>
-
-            {/* FAQ list */}
-            <div className="faq-list">
-                {FAQS.map((item, i) => (
-                    <FaqItem
-                        key={item.q}
-                        item={item}
-                        isOpen={openIndex === i}
-                        onToggle={() => setOpenIndex(openIndex === i ? null : i)}
-                    />
-                ))}
-            </div>
-        </section>
-    );
+    return <section className="faq-section container" id="faq"><div className="faq-intro"><Eyebrow>A FEW GOOD ANSWERS</Eyebrow><h2>Good to know.</h2><p>Everything else?<br />We’re an email away.</p><Link href="/contact" className="inline-link">Talk to us <ArrowUpRight size={16} /></Link></div><div className="faq-list">{questions.map(([question, answer]) => <details key={question}><summary>{question}<Plus size={18} /></summary><p>{answer}</p></details>)}</div></section>;
 }

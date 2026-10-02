@@ -1,39 +1,10 @@
-import { useEffect } from 'react';
 import { Copyright, ShieldCheck, Mail, Send, AlertTriangle, FileText } from 'lucide-react';
-import { SpotlightCard } from '../components/reactbits';
+import DocumentLayout, { DocumentSection as SpotlightCard } from '../components/PageLayout';
 import { Link } from '../context/RouterContext';
 
 export default function DmcaPolicy() {
-    useEffect(() => {
-        document.title = 'DMCA Copyright Policy — YTSaver';
-        window.scrollTo(0, 0);
-    }, []);
-
-    return (
-        <div className="min-h-screen py-16 px-4 sm:px-6 max-w-4xl mx-auto">
-            {/* Breadcrumb */}
-            <nav className="flex items-center gap-2 text-xs font-semibold text-zinc-400 mb-8">
-                <Link href="/" className="hover:text-primary transition-colors">Home</Link>
-                <span>/</span>
-                <span className="text-zinc-200">DMCA Policy</span>
-            </nav>
-
-            {/* Header */}
-            <div className="mb-12">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-rose-500/30 bg-rose-500/10 text-rose-400 text-xs font-bold mb-4">
-                    <Copyright className="size-3.5" />
-                    Copyright Protection & Compliance
-                </div>
-                <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white mb-4 font-heading">
-                    DMCA & Copyright Policy
-                </h1>
-                <p className="text-zinc-400 text-sm sm:text-base leading-relaxed">
-                    YTSaver respects intellectual property rights and adheres strictly to the Digital Millennium Copyright Act (DMCA) of 1998 (17 U.S.C. § 512).
-                </p>
-            </div>
-
-            {/* Content Cards */}
-            <div className="space-y-8 text-zinc-300 text-sm sm:text-base leading-relaxed">
+    return <DocumentLayout type="dmca">
+        <div className="space-y-8 text-zinc-300 text-sm sm:text-base leading-relaxed">
                 <SpotlightCard className="p-6 sm:p-8 bg-[#0c0e17]/90 border-white/10 rounded-2xl" spotlightColor="rgba(244, 63, 94, 0.15)">
                     <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2.5">
                         <ShieldCheck className="size-5 text-rose-400" />
@@ -95,6 +66,5 @@ export default function DmcaPolicy() {
                     </p>
                 </SpotlightCard>
             </div>
-        </div>
-    );
+    </DocumentLayout>;
 }

@@ -9,7 +9,7 @@ export function PageHeader({ eyebrow, title, description }) {
 }
 
 const documents = {
-    privacy: { title: 'Privacy policy.', eyebrow: 'YOUR PRIVACY, IN PLAIN VIEW', description: 'How we handle your information and keep your downloads yours.', sections: ['Information we collect', 'Stream processing', 'Cookies & local storage', 'Your data rights', 'Get in touch'] },
+    privacy: { title: 'Privacy policy.', eyebrow: 'YOUR PRIVACY, IN PLAIN VIEW', description: 'How we handle your information and keep your downloads yours.', sections: ['Information we don’t collect', 'Stream processing', 'Cookies & local storage', 'Your data rights', 'Get in touch'] },
     terms: { title: 'Terms of service.', eyebrow: 'THE GROUND RULES', description: 'A few things to know before you use YTSaver.', sections: ['Acceptance of terms', 'Permitted use', 'Third-party disclaimer', 'Warranties & liability'] },
     dmca: { title: 'Respect the creator.', eyebrow: 'DMCA & COPYRIGHT POLICY', description: 'Our approach to copyright and how to raise a concern.', sections: ['Our role', 'Submit a notice', 'Contact the team'] },
 };

@@ -1,105 +1,33 @@
+import { ArrowDown, Film, Music, Check } from 'lucide-react';
 import Downloader from './Downloader';
-import { Download, ShieldCheck, Zap, Star } from 'lucide-react';
-import { Particles, BlurText, GradientText, ShinyText, StarBorder } from './reactbits';
+import { AmbientThreads, Eyebrow, RevealText } from './Motion';
+import { Link } from '../context/RouterContext';
 
-export default function Hero() {
-    return (
-        <section className="hero-section redesign-check">
-            {/* Real React Bits Particles Background */}
-            <div className="hero-particles-bg">
-                <Particles
-                    particleCount={120}
-                    particleSpread={12}
-                    speed={0.08}
-                    particleColors={['#FF1A43', '#FF4D6D', '#ff6b8b', '#ffffff']}
-                    alphaParticles={true}
-                    particleBaseSize={80}
-                    sizeRandomness={1.2}
-                    moveParticlesOnHover={true}
-                    particleHoverFactor={0.5}
-                    cameraDistance={22}
-                />
+const content = {
+    all: { label: 'YOUR VIDEOS. YOUR WAY.', title: 'Worth watching.', accent: 'Worth keeping.', description: 'Take your favorite videos offline. Paste a YouTube link, pick a format, and make it yours.', note: 'VIDEO & AUDIO, WITHOUT THE EXTRA STEPS' },
+    video: { label: 'YOUTUBE → MP4', title: 'Every frame.', accent: 'Yours to keep.', description: 'Save YouTube videos as MP4. Choose from the available resolutions and take the whole picture with you.', note: 'THE BIG PICTURE. THE SMALL DETAILS.' },
+    audio: { label: 'YOUTUBE → AUDIO', title: 'Less screen.', accent: 'More sound.', description: 'Keep the part you want to hear. Extract audio from YouTube and choose the format that fits your device.', note: 'YOUR NEXT LISTEN STARTS HERE' },
+};
+
+export default function Hero({ mode = 'all' }) {
+    const copy = content[mode];
+    return <section className={`hero ${mode !== 'all' ? 'converter-hero' : ''}`}>
+        <AmbientThreads />
+        <div className="hero-inner">
+            <Eyebrow>{copy.label}</Eyebrow>
+            <h1 className="hero-title" aria-label={`${copy.title} ${copy.accent}`}><RevealText text={copy.title} className="hero-title-line" /><span className="hero-accent"><RevealText text={copy.accent} className="hero-title-line" /></span></h1>
+            <p className="hero-description">{copy.description}</p>
+            <div className="download-workspace" id="downloader">
+                <div className="workspace-heading"><span className="mono">01 / THE DOWNLOADER</span><span className="workspace-caption">One link. All your options.</span></div>
+                <div className="mode-links" aria-label="Converter mode">
+                    <Link href="/" className={mode === 'all' ? 'selected' : ''} aria-current={mode === 'all' ? 'page' : undefined}>All formats</Link>
+                    <Link href="/youtube-to-mp4" className={mode === 'video' ? 'selected' : ''} aria-current={mode === 'video' ? 'page' : undefined}><Film size={14} /> Video / MP4</Link>
+                    <Link href="/youtube-to-mp3" className={mode === 'audio' ? 'selected' : ''} aria-current={mode === 'audio' ? 'page' : undefined}><Music size={14} /> Audio / MP3</Link>
+                </div>
+                <Downloader key={mode} initialTab={mode === 'audio' ? 'audio' : 'video'} />
             </div>
-
-            {/* Ambient glow orbs */}
-            <div className="hero-glow-top" />
-            <div className="hero-glow-left" />
-            <div className="hero-glow-right" />
-
-            <div className="hero-content">
-                {/* Badge */}
-                <div className="hero-badge">
-                    <Star className="hero-badge-icon" />
-                    <ShinyText
-                        text="100% Free · No Sign-Up · Zero Storage"
-                        speed={3}
-                        color="#9ca3af"
-                        shineColor="#ffffff"
-                    />
-                </div>
-
-                {/* Headline using real BlurText */}
-                <h1 className="hero-headline">
-                    <BlurText
-                        text="Download YouTube Videos"
-                        delay={60}
-                        className="hero-headline-line"
-                        direction="top"
-                        stepDuration={0.3}
-                    />
-                    <GradientText
-                        colors={['#FF1A43', '#FF6B8B', '#F97316', '#FF1A43']}
-                        animationSpeed={6}
-                        className="hero-headline-gradient"
-                    >
-                        in Seconds
-                    </GradientText>
-                </h1>
-
-                {/* Subtitle */}
-                <p className="hero-subtitle">
-                    Extract crisp <strong>MP4 videos</strong> and high-bitrate <strong>MP3 audio</strong> directly
-                    to your device. No ads, no sign-up, no files stored on our server.
-                </p>
-
-                {/* Quick stats */}
-                <div className="hero-stats">
-                    <div className="hero-stat">
-                        <Zap className="hero-stat-icon amber" />
-                        <span>Direct CDN Stream</span>
-                    </div>
-                    <div className="hero-stat-divider" />
-                    <div className="hero-stat">
-                        <ShieldCheck className="hero-stat-icon green" />
-                        <span>Zero Files Stored</span>
-                    </div>
-                    <div className="hero-stat-divider" />
-                    <div className="hero-stat">
-                        <Download className="hero-stat-icon blue" />
-                        <span>4K · 1080p · 720p · MP3</span>
-                    </div>
-                </div>
-
-                {/* Downloader */}
-                <div className="hero-downloader-wrap">
-                    <Downloader />
-                </div>
-
-                {/* Star border CTA hint */}
-                <div className="hero-cta-hint">
-                    <StarBorder
-                        as="div"
-                        color="#FF1A43"
-                        speed="4s"
-                        backgroundColor="#0d0d0d"
-                        textColor="#9ca3af"
-                        borderColor="#1f1f1f"
-                        className="hero-star-badge"
-                    >
-                        ✦ Trusted by thousands of users worldwide
-                    </StarBorder>
-                </div>
-            </div>
-        </section>
-    );
+            <div className="hero-assurances">{['Free to use', 'No account needed', 'Straight to your device'].map(text => <span key={text}><Check size={13} />{text}</span>)}</div>
+        </div>
+        <div className="hero-bottom container"><span className="mono">{copy.note}</span><Link href="/#how" className="scroll-link">A little further down <ArrowDown size={14} /></Link></div>
+    </section>;
 }

@@ -1,39 +1,10 @@
-import { useEffect } from 'react';
 import { Scale, AlertCircle, FileCheck, ShieldAlert, Award } from 'lucide-react';
-import { SpotlightCard } from '../components/reactbits';
+import DocumentLayout, { DocumentSection as SpotlightCard } from '../components/PageLayout';
 import { Link } from '../context/RouterContext';
 
 export default function TermsOfService() {
-    useEffect(() => {
-        document.title = 'Terms of Service — YTSaver';
-        window.scrollTo(0, 0);
-    }, []);
-
-    return (
-        <div className="min-h-screen py-16 px-4 sm:px-6 max-w-4xl mx-auto">
-            {/* Breadcrumb */}
-            <nav className="flex items-center gap-2 text-xs font-semibold text-zinc-400 mb-8">
-                <Link href="/" className="hover:text-primary transition-colors">Home</Link>
-                <span>/</span>
-                <span className="text-zinc-200">Terms of Service</span>
-            </nav>
-
-            {/* Header */}
-            <div className="mb-12">
-                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full border border-primary/30 bg-primary/10 text-primary text-xs font-bold mb-4">
-                    <Scale className="size-3.5" />
-                    Legal Agreement
-                </div>
-                <h1 className="text-3xl sm:text-5xl font-extrabold tracking-tight text-white mb-4 font-heading">
-                    Terms of Service
-                </h1>
-                <p className="text-zinc-400 text-sm sm:text-base leading-relaxed">
-                    Last updated: October 2026. Please read these terms carefully before accessing or using YTSaver.
-                </p>
-            </div>
-
-            {/* Content Cards */}
-            <div className="space-y-8 text-zinc-300 text-sm sm:text-base leading-relaxed">
+    return <DocumentLayout type="terms">
+        <div className="space-y-8 text-zinc-300 text-sm sm:text-base leading-relaxed">
                 <SpotlightCard className="p-6 sm:p-8 bg-[#0c0e17]/90 border-white/10 rounded-2xl" spotlightColor="rgba(255, 26, 67, 0.15)">
                     <h2 className="text-xl font-bold text-white mb-4 flex items-center gap-2.5">
                         <FileCheck className="size-5 text-primary" />
@@ -88,6 +59,5 @@ export default function TermsOfService() {
                     </p>
                 </SpotlightCard>
             </div>
-        </div>
-    );
+    </DocumentLayout>;
 }

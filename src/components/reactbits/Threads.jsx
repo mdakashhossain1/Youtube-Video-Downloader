@@ -125,9 +125,6 @@ void main() {
 const Threads = ({ color = [1, 1, 1], amplitude = 1, distance = 0, enableMouseInteraction = false, ...rest }) => {
   const containerRef = useRef(null);
   const animationFrameId = useRef(0);
-
-  // Keep the latest props in a ref so updating them mutates the live shader
-  // uniforms instead of tearing down and rebuilding the whole WebGL context.
   const propsRef = useRef({ color, amplitude, distance, enableMouseInteraction });
   propsRef.current = { color, amplitude, distance, enableMouseInteraction };
 
@@ -159,11 +156,6 @@ const Threads = ({ color = [1, 1, 1], amplitude = 1, distance = 0, enableMouseIn
     });
 
     const mesh = new Mesh(gl, { geometry, program });
-
-    // The fragment shader is heavy (per-pixel Perlin noise across many lines), so
-    // its cost scales with the number of rendered pixels. Cap the internal render
-    // resolution to keep large / high-DPI screens smooth; the effect is soft
-    // enough that the downscale is imperceptible.
     const MAX_RENDER_DIM = 1920;
     function resize() {
       const { clientWidth, clientHeight } = container;
@@ -196,9 +188,6 @@ const Threads = ({ color = [1, 1, 1], amplitude = 1, distance = 0, enableMouseIn
     }
     container.addEventListener('mousemove', handleMouseMove);
     container.addEventListener('mouseleave', handleMouseLeave);
-
-    // Only animate while the canvas is on screen and the tab is visible, so the
-    // shader never burns GPU/CPU for something the user can't see.
     let isVisible = true;
     const intersectionObserver = new IntersectionObserver(
       entries => {

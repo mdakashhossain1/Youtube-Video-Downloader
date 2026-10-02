@@ -4,8 +4,8 @@
   "description": "Free, fast, secure YouTube video and audio downloader. Save MP4 videos and MP3 tracks with zero server storage.",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#0F1117",
-  "theme_color": "#FF0033",
+  "background_color": "#120f17",
+  "theme_color": "#b38af3",
   "icons": [
     {
       "src": "/icon.svg",
