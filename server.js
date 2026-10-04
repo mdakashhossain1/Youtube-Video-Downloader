@@ -4,7 +4,7 @@ const { Readable, pipeline } = require('stream');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { Innertube, Platform } = require('youtubei.js');
+const { Innertube, Platform, UniversalCache } = require('youtubei.js');
 
 // ── Anti-Crash Process Shield ────────────────────────────────────────────────
 // Prevents unhandled stream abortions or YouTube connection drops from killing the server
@@ -187,6 +187,49 @@ const TEMP_DIR = path.resolve(__dirname, 'temp_downloads');
 const cleanupQueue = new FileCleanupQueue(TEMP_DIR);
 
 // ── Innertube Instance Singleton ─────────────────────────────────────────────
+// ── Cookie & Session Authenticator ───────────────────────────────────────────
+// Resolves cookies from .env, cookies.txt (Netscape or raw format) to bypass datacenter IP restrictions
+function getSessionCookie() {
+    if (process.env.YOUTUBE_COOKIE) {
+        return process.env.YOUTUBE_COOKIE.trim();
+    }
+    const possiblePaths = [
+        path.resolve(__dirname, 'cookies.txt'),
+        path.resolve(process.cwd(), 'cookies.txt'),
+        path.resolve(__dirname, 'youtube_cookies.txt'),
+    ];
+    for (const filePath of possiblePaths) {
+        if (fs.existsSync(filePath)) {
+            try {
+                const raw = fs.readFileSync(filePath, 'utf8');
+                if (raw.includes('\t')) {
+                    // Netscape format
+                    const cookies = [];
+                    for (const line of raw.split(/\r?\n/)) {
+                        if (line.startsWith('#') || !line.trim()) continue;
+                        const parts = line.split('\t');
+                        if (parts.length >= 7) {
+                            cookies.push(`${parts[5].trim()}=${parts[6].trim()}`);
+                        }
+                    }
+                    if (cookies.length > 0) {
+                        console.log(`[YouTube.js] Loaded ${cookies.length} cookies from ${path.basename(filePath)}`);
+                        return cookies.join('; ');
+                    }
+                }
+                if (raw.trim()) {
+                    console.log(`[YouTube.js] Loaded cookie string from ${path.basename(filePath)}`);
+                    return raw.trim();
+                }
+            } catch (err) {
+                console.warn(`[YouTube.js] Failed to read ${filePath}:`, err.message);
+            }
+        }
+    }
+    return null;
+}
+
+// ── Innertube Instance Singleton ─────────────────────────────────────────────
 let ytInstance = null;
 let ytInitPromise = null;
 
@@ -196,16 +239,31 @@ async function getYt() {
 
     ytInitPromise = (async () => {
         try {
+            const cachePath = path.resolve(__dirname, '.yt_session');
+            const cookie = getSessionCookie();
+
             const config = {
+                cache: new UniversalCache(true, cachePath),
                 device_category: 'mobile',
             };
-            if (process.env.YOUTUBE_COOKIE) {
-                config.cookie = process.env.YOUTUBE_COOKIE;
-                console.log('[YouTube.js] Authenticated session cookie detected.');
+
+            if (cookie) {
+                config.cookie = cookie;
+                console.log('[YouTube.js] Session authenticated with cookie.');
             }
+
             const yt = await Innertube.create(config);
             ytInstance = yt;
-            console.log('[YouTube.js] Mobile-profile Innertube initialized successfully.');
+
+            if (yt.session.logged_in) {
+                console.log('[YouTube.js] ✅ Innertube is LOGGED IN. "Video is login required" is bypassed.');
+            } else {
+                console.log('[YouTube.js] Innertube initialized (anonymous mode).');
+                if (!cookie) {
+                    console.log('[YouTube.js] 💡 Note: If datacenter IP requires login, run `npm run login` or add `cookies.txt`.');
+                }
+            }
+
             return yt;
         } catch (err) {
             console.error('[YouTube.js] Initialization error:', err.message);
