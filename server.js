@@ -196,9 +196,16 @@ async function getYt() {
 
     ytInitPromise = (async () => {
         try {
-            const yt = await Innertube.create();
+            const config = {
+                device_category: 'mobile',
+            };
+            if (process.env.YOUTUBE_COOKIE) {
+                config.cookie = process.env.YOUTUBE_COOKIE;
+                console.log('[YouTube.js] Authenticated session cookie detected.');
+            }
+            const yt = await Innertube.create(config);
             ytInstance = yt;
-            console.log('[YouTube.js] Innertube initialized successfully.');
+            console.log('[YouTube.js] Mobile-profile Innertube initialized successfully.');
             return yt;
         } catch (err) {
             console.error('[YouTube.js] Initialization error:', err.message);
@@ -284,6 +291,98 @@ app.get(['/api/status', '/status'], (req, res) => {
     });
 });
 
+// ── Multi-Layer Metadata Extraction Engine ───────────────────────────────────
+// Layer 1: Innertube mobile & embedded clients (ANDROID -> IOS -> TV)
+// Layer 2: Official YouTube oEmbed API (100% immune to datacenter IP / bot blocking)
+// Layer 3: NoEmbed Fallback
+async function fetchVideoDetailsMultiLayer(yt, videoId) {
+    // Layer 1: Innertube Mobile/Embedded Clients
+    const clients = ['ANDROID', 'IOS', 'TV'];
+    for (const client of clients) {
+        try {
+            const info = await yt.getBasicInfo(videoId, client);
+            const playStatus = info?.playability_status?.status;
+            if (playStatus !== 'LOGIN_REQUIRED' && info?.basic_info?.title) {
+                const thumbs = info.basic_info.thumbnail || [];
+                const bestThumb =
+                    thumbs.length > 0
+                        ? thumbs[thumbs.length - 1]?.url
+                        : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
+
+                return {
+                    title: info.basic_info.title,
+                    author: info.basic_info.author || info.basic_info.channel?.name || 'YouTube Creator',
+                    duration: Number(info.basic_info.duration) || 0,
+                    views: Number(info.basic_info.view_count) || 0,
+                    thumbnail: bestThumb,
+                    source: `innertube_${client}`,
+                };
+            }
+        } catch (err) {
+            console.warn(`[Metadata Engine] Client ${client} failed for ${videoId}:`, err.message);
+        }
+    }
+
+    // Layer 2: Official YouTube oEmbed API (Bypasses all datacenter bot guard checks)
+    try {
+        console.log(`[Metadata Engine] Falling back to Layer 2: Official YouTube oEmbed for ${videoId}`);
+        const oembedRes = await fetch(
+            `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`,
+            {
+                headers: {
+                    'User-Agent':
+                        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                },
+            }
+        );
+        if (oembedRes.ok) {
+            const data = await oembedRes.json();
+            return {
+                title: data.title || 'YouTube Video',
+                author: data.author_name || 'YouTube Creator',
+                duration: 0,
+                views: 0,
+                thumbnail: data.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                source: 'oembed_official',
+            };
+        }
+    } catch (oembedErr) {
+        console.warn(`[Metadata Engine] oEmbed fallback failed:`, oembedErr.message);
+    }
+
+    // Layer 3: NoEmbed Fallback
+    try {
+        const noembedRes = await fetch(
+            `https://noembed.com/embed?url=https://www.youtube.com/watch?v=${videoId}`
+        );
+        if (noembedRes.ok) {
+            const data = await noembedRes.json();
+            if (data.title) {
+                return {
+                    title: data.title,
+                    author: data.author_name || 'YouTube Creator',
+                    duration: 0,
+                    views: 0,
+                    thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                    source: 'noembed_fallback',
+                };
+            }
+        }
+    } catch {
+        /* ignore */
+    }
+
+    // Safe Default
+    return {
+        title: 'YouTube Video',
+        author: 'YouTube Creator',
+        duration: 0,
+        views: 0,
+        thumbnail: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+        source: 'default',
+    };
+}
+
 // ── GET /formats — Fetch metadata & clean available format options ───────────
 app.get('/formats', async (req, res) => {
     const videoId = extractVideoId(req.query.url);
@@ -293,8 +392,7 @@ app.get('/formats', async (req, res) => {
 
     try {
         const yt = await getYt();
-        const info = await yt.getBasicInfo(videoId);
-        const details = info.basic_info;
+        const details = await fetchVideoDetailsMultiLayer(yt, videoId);
 
         // Clean, structured formats for the user
         const videoFormats = [
@@ -343,24 +441,21 @@ app.get('/formats', async (req, res) => {
             },
         ];
 
-        // Best thumbnail
-        const thumbs = details.thumbnail || [];
-        const bestThumb = thumbs.length > 0 ? thumbs[thumbs.length - 1]?.url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`;
-
         res.json({
             id: videoId,
-            title: details.title || 'YouTube Video',
-            thumbnail: bestThumb,
-            author: details.author || details.channel?.name || 'YouTube Creator',
-            duration: Number(details.duration) || 0,
-            views: Number(details.view_count) || 0,
+            title: details.title,
+            thumbnail: details.thumbnail,
+            author: details.author,
+            duration: details.duration,
+            views: details.views,
             video: videoFormats,
             audio: audioFormats,
             combined: videoFormats,
+            metadataSource: details.source,
         });
     } catch (err) {
         console.error('[Formats] Error fetching video:', err.message);
-        sendError(res, 500, 'Could not fetch video info. The video may be private, age-restricted, or removed.');
+        sendError(res, 500, 'Could not fetch video info. Please try again.');
     }
 });
 
@@ -382,8 +477,8 @@ app.get('/prepare', async (req, res) => {
 
     try {
         const yt = await getYt();
-        const info = await yt.getBasicInfo(videoId);
-        const title = sanitizeFilename(info.basic_info.title);
+        const details = await fetchVideoDetailsMultiLayer(yt, videoId);
+        const title = sanitizeFilename(details.title);
 
         emit({ type: 'progress', pct: 50 });
         emit({ type: 'done', name: title, size: 0 });
@@ -538,8 +633,8 @@ app.get('/download', async (req, res) => {
 
     try {
         const yt = await getYt();
-        const info = await yt.getBasicInfo(videoId);
-        const title = sanitizeFilename(info.basic_info.title);
+        const details = await fetchVideoDetailsMultiLayer(yt, videoId);
+        const title = sanitizeFilename(details.title);
 
         const isAudio = kind === 'mp3' || kind === 'audio' || kind === 'm4a';
         const ext = isAudio ? (kind === 'm4a' ? 'm4a' : 'mp3') : 'mp4';
