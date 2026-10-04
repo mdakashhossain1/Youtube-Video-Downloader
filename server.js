@@ -1,10 +1,31 @@
 const http = require('http');
 const express = require('express');
-const { Readable } = require('stream');
+const { Readable, pipeline } = require('stream');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { Innertube, Platform } = require('youtubei.js');
+
+// ── Anti-Crash Process Shield ────────────────────────────────────────────────
+// Prevents unhandled stream abortions or YouTube connection drops from killing the server
+process.on('uncaughtException', (err) => {
+    if (
+        err.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+        err.code === 'ECONNRESET' ||
+        err.code === 'EPIPE' ||
+        err.name === 'AbortError' ||
+        err.message?.includes('aborted') ||
+        err.message?.includes('premature close')
+    ) {
+        console.log('[AntiCrash] Safely handled client stream disconnect:', err.message);
+        return;
+    }
+    console.error('[AntiCrash Guard] Intercepted Uncaught Exception:', err.stack || err);
+});
+
+process.on('unhandledRejection', (reason) => {
+    console.warn('[AntiCrash Guard] Intercepted Unhandled Rejection:', reason?.message || reason);
+});
 
 // ── Enable YouTube.js JavaScript Evaluator for Signature Deciphering ─────────
 Platform.shim.eval = async (data, env) => {
@@ -373,7 +394,139 @@ app.get('/prepare', async (req, res) => {
     }
 });
 
-// ── GET /download — Stream video/audio directly, zero files saved on server ──
+// ── Multi-Layer Stream Engine ────────────────────────────────────────────────
+// Layer 1: Client waterfall (ANDROID -> YTMUSIC -> IOS -> MWEB)
+// Layer 2: Direct decipher stream fallback with browser header spoofing
+async function acquireMultiLayerStream(yt, videoId, { kind, format }) {
+    const isAudio = kind === 'mp3' || kind === 'audio' || kind === 'm4a';
+
+    // Multi-Layer client waterfall matrix
+    const clientMatrix = isAudio
+        ? ['IOS', 'YTMUSIC', 'ANDROID', 'MWEB']
+        : ['ANDROID', 'YTMUSIC', 'IOS', 'MWEB'];
+
+    let lastError = null;
+
+    // Layer 1 & 2: Client Waterfall via Innertube with adaptive quality fallback
+    for (const client of clientMatrix) {
+        // Try requested format first, then fall back to 'best' if requested format isn't available
+        const qualitiesToTry = format && format !== 'auto' && format !== 'best' 
+            ? [format, 'best'] 
+            : ['best'];
+
+        for (const q of qualitiesToTry) {
+            try {
+                console.log(`[MultiLayer Engine] Trying client: ${client} (quality: ${q}) for ${videoId} (${kind})`);
+                const stream = await yt.download(videoId, {
+                    type: isAudio ? 'audio' : 'video+audio',
+                    quality: q,
+                    client: client,
+                });
+
+                if (stream) {
+                    console.log(`[MultiLayer Engine] SUCCESS via client: ${client} (quality: ${q})`);
+                    return { stream, clientUsed: `${client}_${q}`, isWebStream: true };
+                }
+            } catch (err) {
+                console.warn(`[MultiLayer Engine] Client ${client} with quality ${q} failed: ${err.message}`);
+                lastError = err;
+            }
+        }
+    }
+
+    // Layer 3: Direct Format Decipher Fallback (Fetches directly from Google CDN with realistic headers)
+    try {
+        console.log(`[MultiLayer Engine] Attempting Layer 3: Direct decipher fallback for ${videoId}`);
+        const info = await yt.getInfo(videoId);
+        const streamingData = info.streaming_data;
+
+        if (streamingData) {
+            const candidateFormats = isAudio
+                ? (streamingData.adaptive_formats || []).filter((f) => f.has_audio && !f.has_video)
+                : (streamingData.formats || []).filter((f) => f.has_video && f.has_audio);
+
+            for (const f of candidateFormats) {
+                try {
+                    const decipheredUrl = await f.decipher(yt.session.player);
+                    if (decipheredUrl) {
+                        const cdnRes = await fetch(decipheredUrl, {
+                            headers: {
+                                'User-Agent':
+                                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                                Accept: '*/*',
+                                'Accept-Encoding': 'identity;q=1, *;q=0',
+                                Range: 'bytes=0-',
+                            },
+                        });
+
+                        if (cdnRes.ok && cdnRes.body) {
+                            console.log(`[MultiLayer Engine] SUCCESS via Layer 3 Direct Decipher!`);
+                            return { stream: cdnRes.body, clientUsed: 'DIRECT_CDN_DECIPHER', isWebStream: true };
+                        }
+                    }
+                } catch (decErr) {
+                    console.warn(`[MultiLayer Engine] Decipher format candidate failed:`, decErr.message);
+                }
+            }
+        }
+    } catch (layer3Err) {
+        console.warn(`[MultiLayer Engine] Layer 3 direct decipher failed:`, layer3Err.message);
+    }
+
+    throw lastError || new Error('All download layers were restricted by YouTube bot detection.');
+}
+
+// ── GET /api/stream-url — Deciphered direct CDN URL for client residential download ─
+app.get(['/api/stream-url', '/stream-url'], async (req, res) => {
+    const videoId = extractVideoId(req.query.url);
+    const kind = req.query.kind || 'video';
+
+    if (!videoId) {
+        return sendError(res, 400, 'Invalid YouTube link or video ID.');
+    }
+
+    try {
+        const yt = await getYt();
+        const info = await yt.getInfo(videoId);
+        const title = sanitizeFilename(info.basic_info.title);
+        const streamingData = info.streaming_data;
+
+        if (!streamingData) {
+            return sendError(res, 404, 'No streaming formats available for this video.');
+        }
+
+        const isAudio = kind === 'mp3' || kind === 'audio' || kind === 'm4a';
+        const candidateFormats = isAudio
+            ? (streamingData.adaptive_formats || []).filter((f) => f.has_audio && !f.has_video)
+            : (streamingData.formats || []).filter((f) => f.has_video && f.has_audio);
+
+        for (const f of candidateFormats) {
+            try {
+                const directUrl = await f.decipher(yt.session.player);
+                if (directUrl) {
+                    return res.json({
+                        success: true,
+                        videoId,
+                        title,
+                        filename: `${title}.${isAudio ? (kind === 'm4a' ? 'm4a' : 'mp3') : 'mp4'}`,
+                        directUrl,
+                        mimeType: f.mime_type,
+                        quality: f.quality_label || f.audio_quality || 'Standard',
+                    });
+                }
+            } catch {
+                /* continue loop */
+            }
+        }
+
+        sendError(res, 404, 'Could not decipher a direct playback URL.');
+    } catch (err) {
+        console.error('[Stream URL Error]:', err.message);
+        sendError(res, 500, 'Failed to resolve stream URL. Video may be restricted.');
+    }
+});
+
+// ── GET /download — Stream video/audio directly with bulletproof pipeline ──────
 app.get('/download', async (req, res) => {
     const videoId = extractVideoId(req.query.url);
     const kind = req.query.kind || 'video'; // 'video' | 'audio' | 'mp3'
@@ -388,72 +541,71 @@ app.get('/download', async (req, res) => {
         const info = await yt.getBasicInfo(videoId);
         const title = sanitizeFilename(info.basic_info.title);
 
-        let stream = null;
-        let filename = `${title}.mp4`;
-        let contentType = 'video/mp4';
+        const isAudio = kind === 'mp3' || kind === 'audio' || kind === 'm4a';
+        const ext = isAudio ? (kind === 'm4a' ? 'm4a' : 'mp3') : 'mp4';
+        const contentType = isAudio ? (kind === 'm4a' ? 'audio/mp4' : 'audio/mpeg') : 'video/mp4';
+        const filename = `${title}.${ext}`;
 
-        if (kind === 'mp3' || kind === 'audio') {
-            filename = `${title}.${kind === 'm4a' ? 'm4a' : 'mp3'}`;
-            contentType = kind === 'm4a' ? 'audio/mp4' : 'audio/mpeg';
-
-            // High-quality audio stream directly from YouTube CDN via IOS client
-            stream = await yt.download(videoId, {
-                type: 'audio',
-                quality: 'best',
-                client: 'IOS',
-            });
-        } else {
-            // Video stream: pre-muxed with both video + audio via ANDROID client
-            filename = `${title}.mp4`;
-            contentType = 'video/mp4';
-
-            stream = await yt.download(videoId, {
-                type: 'video+audio',
-                quality: 'best',
-                client: 'ANDROID',
-            });
-        }
+        // Multi-Layer stream acquisition
+        const { stream, clientUsed, isWebStream } = await acquireMultiLayerStream(yt, videoId, {
+            kind,
+            format,
+        });
 
         if (!stream) {
-            return sendError(res, 404, 'Could not obtain stream for this media.');
+            return sendError(res, 404, 'Could not obtain stream from any client layer.');
         }
 
-        // Set attachment headers for instant browser download
+        // Set response headers for instant browser attachment download
         res.set({
             'Content-Type': contentType,
             'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
             'Cache-Control': 'no-store',
             'X-Accel-Buffering': 'no',
+            'X-Download-Layer': clientUsed,
+            'X-Content-Type-Options': 'nosniff',
         });
 
-        // Convert Web ReadableStream to Node.js Readable stream
-        const nodeReadable = Readable.fromWeb(stream);
+        // Convert Web Stream to Node Readable Stream if needed
+        const nodeReadable = isWebStream ? Readable.fromWeb(stream) : stream;
 
-        // Pipe to response directly — zero files written to disk
-        nodeReadable.pipe(res);
-
-        // Stream event handling & guaranteed cleanup
-        nodeReadable.on('error', (err) => {
-            console.error('[Download Stream Error]:', err.message);
-            if (!res.headersSent) {
-                sendError(res, 500, 'Streaming failed.');
+        // Use stream.pipeline for safe teardown and crash protection on client disconnect
+        pipeline(nodeReadable, res, (err) => {
+            if (err) {
+                if (
+                    err.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
+                    err.code === 'ECONNRESET' ||
+                    err.name === 'AbortError' ||
+                    err.message?.includes('aborted')
+                ) {
+                    console.log(`[Download Stream] Client aborted download: ${videoId} (${filename})`);
+                } else {
+                    console.error(`[Download Stream Pipeline Error]: ${err.message}`);
+                }
             } else {
-                res.destroy();
+                console.log(`[Download Stream] Successfully completed: ${filename} (via ${clientUsed})`);
             }
-        });
-
-        // When request finishes or client disconnects, run the queue cleanup check
-        res.on('finish', () => {
             cleanupQueue.processQueue();
         });
 
         req.on('close', () => {
-            nodeReadable.destroy();
-            cleanupQueue.processQueue();
+            if (!res.writableEnded) {
+                try {
+                    nodeReadable.destroy();
+                } catch {
+                    /* ignore */
+                }
+            }
         });
     } catch (err) {
         console.error('[Download Error]:', err.message);
-        sendError(res, 500, 'Download failed. The video may be restricted or unavailable.');
+        if (!res.headersSent) {
+            sendError(
+                res,
+                500,
+                `Download failed: ${err.message || 'The video may be restricted or blocked by YouTube.'}`
+            );
+        }
     }
 });
 
