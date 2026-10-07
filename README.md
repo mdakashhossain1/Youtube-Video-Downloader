@@ -10,15 +10,18 @@ A modern, high-performance YouTube video and audio downloader built with React 1
 
 ## Requirements
 
-- **Node.js 18+**
+- **Node.js 18+** (also used by yt-dlp to solve YouTube's JS challenges)
 - NPM or PNPM
+- Outbound HTTPS access to github.com on `npm install` (fetches yt-dlp). Re-run `npm run setup:ytdlp` to update it, or set `YTDLP_PATH` to use your own binary.
+
+Video qualities up to 4K are merged by yt-dlp with the bundled `ffmpeg-static`. Files are built in `temp_downloads/` and deleted as soon as the download finishes.
 
 ---
 
 ## Quick Setup
 
 ```bash
-# 1. Install dependencies
+# 1. Install dependencies (also downloads the standalone yt-dlp binary into ./bin)
 npm install
 
 # 2. Build the frontend

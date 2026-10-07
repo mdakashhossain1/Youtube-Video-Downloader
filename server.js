@@ -1,9 +1,11 @@
 const http = require('http');
 const express = require('express');
-const { Readable, pipeline } = require('stream');
+const { Readable, pipeline: pipelineCb } = require('stream');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawn } = require('child_process');
+const ffmpegPath = require('ffmpeg-static');
 const { Innertube, Platform, UniversalCache } = require('youtubei.js');
 
 // ── Anti-Crash Process Shield ────────────────────────────────────────────────
@@ -39,6 +41,8 @@ const PORT = process.env.PORT || 3000;
 // ── Internal File Cleanup Queue System ───────────────────────────────────────
 // Guarantees that zero files remain saved on the server.
 // Any temporary files or download buffers are queued and automatically deleted.
+const STALE_JOB_DIR_MS = 2 * 60 * 60 * 1000;
+
 class FileCleanupQueue {
     constructor(tempDir) {
         this.tempDir = tempDir;
@@ -156,7 +160,10 @@ class FileCleanupQueue {
                 const fullPath = path.join(this.tempDir, file);
                 try {
                     const stat = fs.statSync(fullPath);
-                    if (stat.isFile() && (now - stat.mtimeMs > maxAgeMs || maxAgeMs === 0)) {
+                    if (stat.isDirectory() && (now - stat.mtimeMs > STALE_JOB_DIR_MS || maxAgeMs === 0)) {
+                        fs.rmSync(fullPath, { recursive: true, force: true });
+                        console.log(`[CleanupQueue Sweep] Purged stale job directory: ${file}`);
+                    } else if (stat.isFile() && (now - stat.mtimeMs > maxAgeMs || maxAgeMs === 0)) {
                         fs.unlinkSync(fullPath);
                         this.stats.totalDeleted++;
                         console.log(`[CleanupQueue Sweep] Purged orphaned temp file: ${file}`);
@@ -441,6 +448,144 @@ async function fetchVideoDetailsMultiLayer(yt, videoId) {
     };
 }
 
+// ── Quality listing & yt-dlp download jobs ───────────────────────────────────
+// YouTube only serves one muxed format (360p). 480p-4K are separate video/audio
+// streams, and the CDN refuses anonymous clients past the first few MB of them
+// (PO-token enforcement), so yt-dlp does the real download and merge.
+const LISTING_CLIENTS = ['MWEB', 'IOS', 'ANDROID_VR', 'TV_SIMPLY', 'YTMUSIC'];
+const HEIGHT_LABELS = { 2160: '4K', 1440: '2K', 1080: 'Full HD', 720: 'HD' };
+const MAX_CONCURRENT_JOBS = 2;
+const JOB_TIMEOUT_MS = 30 * 60 * 1000;
+
+const YTDLP_PATH =
+    process.env.YTDLP_PATH ||
+    [path.resolve(__dirname, 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')].find((p) => fs.existsSync(p)) ||
+    'yt-dlp';
+let activeJobs = 0;
+
+async function listAvailableHeights(yt, videoId) {
+    for (const client of LISTING_CLIENTS) {
+        try {
+            const info = await yt.getInfo(videoId, { client });
+            const adaptive = info.streaming_data?.adaptive_formats || [];
+            const heights = [...new Set(adaptive.filter((f) => f.has_video && f.height).map((f) => f.height))];
+            if (heights.length) return heights.sort((a, b) => b - a);
+        } catch {
+            /* try next client */
+        }
+    }
+    return [];
+}
+
+function findCookieFile() {
+    const candidates = [path.resolve(__dirname, 'cookies.txt'), path.resolve(process.cwd(), 'cookies.txt')];
+    return candidates.find((p) => fs.existsSync(p) && fs.readFileSync(p, 'utf8').includes('\t'));
+}
+
+function buildYtDlpArgs(videoId, { isAudio, audioFormat, height }, jobDir) {
+    const args = [
+        '--no-playlist', '--no-warnings', '--no-part', '--newline',
+        '--retries', '5', '--fragment-retries', '5',
+        '--ffmpeg-location', path.dirname(ffmpegPath),
+        '--js-runtimes', `node:${process.execPath}`,
+        '-o', path.join(jobDir, 'media.%(ext)s'),
+    ];
+    const cookieFile = findCookieFile();
+    if (cookieFile) args.push('--cookies', cookieFile);
+
+    if (isAudio) {
+        args.push(
+            '-f', audioFormat === 'm4a' ? 'ba[ext=m4a]/ba' : 'ba/b',
+            '-x', '--audio-format', audioFormat, '--audio-quality', '0'
+        );
+    } else {
+        args.push(
+            '-f', `bv*[height<=${height}]+ba/b[height<=${height}]`,
+            '-S', 'res,vcodec:h264,acodec:m4a',
+            '--merge-output-format', 'mp4'
+        );
+    }
+    args.push(`https://www.youtube.com/watch?v=${videoId}`);
+    return args;
+}
+
+function runYtDlpJob(videoId, options, jobDir, onProcess) {
+    return new Promise((resolve, reject) => {
+        const child = spawn(YTDLP_PATH, buildYtDlpArgs(videoId, options, jobDir), {
+            stdio: ['ignore', 'ignore', 'pipe'],
+            windowsHide: true,
+        });
+        onProcess(child);
+
+        let stderr = '';
+        child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-2000); });
+        const timer = setTimeout(() => child.kill('SIGKILL'), JOB_TIMEOUT_MS);
+
+        child.on('error', (err) => {
+            clearTimeout(timer);
+            reject(err.code === 'ENOENT' ? new Error('yt-dlp is not installed. Run `npm run setup:ytdlp`.') : err);
+        });
+        child.on('close', (code) => {
+            clearTimeout(timer);
+            const finished = fs.readdirSync(jobDir).find((f) => /^media\.(mp4|mp3|m4a)$/.test(f));
+            if (code === 0 && finished) return resolve(path.join(jobDir, finished));
+            reject(new Error(stderr.trim().split('\n').pop() || `yt-dlp exited with code ${code}`));
+        });
+    });
+}
+
+async function runJobWithRetry(videoId, options, jobDir, onProcess, isCancelled) {
+    try {
+        return await runYtDlpJob(videoId, options, jobDir, onProcess);
+    } catch (err) {
+        if (isCancelled()) throw err;
+        console.warn(`[Download] yt-dlp attempt 1 failed (${err.message}); retrying once`);
+        fs.rmSync(jobDir, { recursive: true, force: true });
+        fs.mkdirSync(jobDir, { recursive: true });
+        return runYtDlpJob(videoId, options, jobDir, onProcess);
+    }
+}
+
+async function removeJobDir(jobDir) {
+    await fs.promises.rm(jobDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 500 }).catch(() => {});
+}
+
+async function sendYtDlpDownload(res, videoId, options, { filename, contentType }) {
+    const jobDir = path.join(TEMP_DIR, `job-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);
+    fs.mkdirSync(jobDir, { recursive: true });
+
+    let child = null;
+    let clientGone = false;
+    res.on('close', () => {
+        clientGone = true;
+        child?.kill('SIGKILL');
+    });
+
+    activeJobs++;
+    try {
+        const filePath = await runJobWithRetry(videoId, options, jobDir, (proc) => { child = proc; }, () => clientGone);
+        if (clientGone) return true;
+
+        const { size } = fs.statSync(filePath);
+        res.set({
+            'Content-Type': contentType,
+            'Content-Length': size,
+            'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`,
+            'Cache-Control': 'no-store',
+            'X-Download-Layer': 'yt-dlp',
+        });
+        await new Promise((resolve) => pipelineCb(fs.createReadStream(filePath), res, () => resolve()));
+        console.log(`[Download] yt-dlp delivered ${filename} (${(size / 1048576).toFixed(1)} MB)`);
+        return true;
+    } catch (err) {
+        console.warn(`[Download] yt-dlp job failed for ${videoId}: ${err.message}`);
+        return false;
+    } finally {
+        activeJobs--;
+        removeJobDir(jobDir);
+    }
+}
+
 // ── GET /formats — Fetch metadata & clean available format options ───────────
 app.get('/formats', async (req, res) => {
     const videoId = extractVideoId(req.query.url);
@@ -450,31 +595,24 @@ app.get('/formats', async (req, res) => {
 
     try {
         const yt = await getYt();
-        const details = await fetchVideoDetailsMultiLayer(yt, videoId);
+        const [details, heights] = await Promise.all([
+            fetchVideoDetailsMultiLayer(yt, videoId),
+            listAvailableHeights(yt, videoId),
+        ]);
 
-        // Clean, structured formats for the user
-        const videoFormats = [
-            {
-                id: '720p',
-                label: '720p HD',
-                resolution: '720p',
-                ext: 'mp4',
-                quality: 'High Definition (720p)',
-                type: 'video',
-                note: 'Best quality with audio included',
-                recommended: true,
-            },
-            {
-                id: '360p',
-                label: '360p Standard',
-                resolution: '360p',
-                ext: 'mp4',
-                quality: 'Standard (360p)',
-                type: 'video',
-                note: 'Faster download & smaller size',
-                recommended: false,
-            },
-        ];
+        const availableHeights = heights.length ? heights : [360];
+        const recommendedHeight = availableHeights.find((h) => h <= 1080) ?? availableHeights[0];
+        const videoFormats = availableHeights.map((height) => ({
+            id: `${height}p`,
+            label: HEIGHT_LABELS[height] ? `${height}p ${HEIGHT_LABELS[height]}` : `${height}p`,
+            resolution: `${height}p`,
+            badge: HEIGHT_LABELS[height] || `${height}p`,
+            ext: 'mp4',
+            quality: `${height}p`,
+            type: 'video',
+            note: 'Video + audio merged',
+            recommended: height === recommendedHeight,
+        }));
 
         const audioFormats = [
             {
@@ -695,9 +833,23 @@ app.get('/download', async (req, res) => {
         const title = sanitizeFilename(details.title);
 
         const isAudio = kind === 'mp3' || kind === 'audio' || kind === 'm4a';
-        const ext = isAudio ? (kind === 'm4a' ? 'm4a' : 'mp3') : 'mp4';
-        const contentType = isAudio ? (kind === 'm4a' ? 'audio/mp4' : 'audio/mpeg') : 'video/mp4';
-        const filename = `${title}.${ext}`;
+        const audioFormat = kind === 'm4a' || format === 'm4a' ? 'm4a' : 'mp3';
+        const ext = isAudio ? audioFormat : 'mp4';
+        const contentType = isAudio ? (audioFormat === 'm4a' ? 'audio/mp4' : 'audio/mpeg') : 'video/mp4';
+        const requestedHeight = parseInt(format, 10) || 720;
+        const filename = isAudio ? `${title}.${ext}` : `${title} (${requestedHeight}p).${ext}`;
+
+        if (activeJobs >= MAX_CONCURRENT_JOBS) {
+            return sendError(res, 429, 'The server is busy with other downloads. Please try again in a minute.');
+        }
+        const delivered = await sendYtDlpDownload(
+            res,
+            videoId,
+            { isAudio, audioFormat, height: requestedHeight },
+            { filename, contentType }
+        );
+        if (delivered || res.writableEnded || res.destroyed) return;
+        console.warn('[Download] Falling back to the muxed InnerTube stream (max 360p).');
 
         // Multi-Layer stream acquisition
         const { stream, clientUsed, isWebStream } = await acquireMultiLayerStream(yt, videoId, {
@@ -723,7 +875,7 @@ app.get('/download', async (req, res) => {
         const nodeReadable = isWebStream ? Readable.fromWeb(stream) : stream;
 
         // Use stream.pipeline for safe teardown and crash protection on client disconnect
-        pipeline(nodeReadable, res, (err) => {
+        pipelineCb(nodeReadable, res, (err) => {
             if (err) {
                 if (
                     err.code === 'ERR_STREAM_PREMATURE_CLOSE' ||
