@@ -4,8 +4,15 @@ const { Readable, pipeline: pipelineCb } = require('stream');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { spawn } = require('child_process');
-const ffmpegPath = require('ffmpeg-static');
+const { spawn, execFile } = require('child_process');
+const { ensureYtDlp, YTDLP_BIN_PATH } = require('./scripts/setup-ytdlp');
+
+let ffmpegPath = null;
+try {
+    ffmpegPath = require('ffmpeg-static');
+} catch {
+    console.warn('[ffmpeg] ffmpeg-static is not installed. Run `npm install` for 720p+ downloads.');
+}
 const { Innertube, Platform, UniversalCache } = require('youtubei.js');
 
 // ── Anti-Crash Process Shield ────────────────────────────────────────────────
@@ -457,11 +464,12 @@ const HEIGHT_LABELS = { 2160: '4K', 1440: '2K', 1080: 'Full HD', 720: 'HD' };
 const MAX_CONCURRENT_JOBS = 2;
 const JOB_TIMEOUT_MS = 30 * 60 * 1000;
 
-const YTDLP_PATH =
-    process.env.YTDLP_PATH ||
-    [path.resolve(__dirname, 'bin', process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp')].find((p) => fs.existsSync(p)) ||
-    'yt-dlp';
+const YTDLP_PATH = process.env.YTDLP_PATH || YTDLP_BIN_PATH;
 let activeJobs = 0;
+
+const ytDlpReady = process.env.YTDLP_PATH
+    ? Promise.resolve()
+    : ensureYtDlp().catch((err) => console.error(`[yt-dlp] Auto-install failed: ${err.message}`));
 
 async function listAvailableHeights(yt, videoId) {
     for (const client of LISTING_CLIENTS) {
@@ -486,10 +494,10 @@ function buildYtDlpArgs(videoId, { isAudio, audioFormat, height }, jobDir) {
     const args = [
         '--no-playlist', '--no-warnings', '--no-part', '--newline',
         '--retries', '5', '--fragment-retries', '5',
-        '--ffmpeg-location', path.dirname(ffmpegPath),
         '--js-runtimes', `node:${process.execPath}`,
         '-o', path.join(jobDir, 'media.%(ext)s'),
     ];
+    if (ffmpegPath) args.push('--ffmpeg-location', path.dirname(ffmpegPath));
     const cookieFile = findCookieFile();
     if (cookieFile) args.push('--cookies', cookieFile);
 
@@ -563,6 +571,7 @@ async function sendYtDlpDownload(res, videoId, options, { filename, contentType 
 
     activeJobs++;
     try {
+        await ytDlpReady;
         const filePath = await runJobWithRetry(videoId, options, jobDir, (proc) => { child = proc; }, () => clientGone);
         if (clientGone) return true;
 
@@ -939,9 +948,19 @@ const listenTarget =
         ? process.env.PORT
         : { port: Number(PORT) || 3000 };
 
+async function updateYtDlp() {
+    await ytDlpReady;
+    execFile(YTDLP_PATH, ['-U'], { timeout: 120000, windowsHide: true }, (err, stdout) => {
+        if (err) return console.warn(`[yt-dlp] Auto-update skipped: ${err.message.split('\n')[0]}`);
+        console.log(`[yt-dlp] ${stdout.trim().split('\n').pop()}`);
+    });
+}
+
 server.listen(listenTarget, () => {
     console.log(`[YTSaver] Server active on port ${PORT}`);
     console.log(`[YTSaver] Cleanup Queue active: Zero files retained on server.`);
+    updateYtDlp();
+    setInterval(updateYtDlp, 24 * 60 * 60 * 1000).unref();
 });
 
 server.on('error', (err) => {

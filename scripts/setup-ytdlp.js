@@ -8,24 +8,32 @@ const ASSETS = {
     linux: { asset: process.arch === 'arm64' ? 'yt-dlp_linux_aarch64' : 'yt-dlp_linux', file: 'yt-dlp' },
 };
 
-async function main() {
-    const target = ASSETS[process.platform];
+const BIN_DIR = path.resolve(__dirname, '..', 'bin');
+const target = ASSETS[process.platform];
+const YTDLP_BIN_PATH = path.join(BIN_DIR, target?.file || 'yt-dlp');
+
+async function ensureYtDlp({ force = false } = {}) {
     if (!target) throw new Error(`Unsupported platform: ${process.platform}`);
+    if (!force && fs.existsSync(YTDLP_BIN_PATH)) return YTDLP_BIN_PATH;
 
-    const binDir = path.resolve(__dirname, '..', 'bin');
-    const destination = path.join(binDir, target.file);
-    fs.mkdirSync(binDir, { recursive: true });
-
-    console.log(`Downloading ${target.asset}...`);
+    fs.mkdirSync(BIN_DIR, { recursive: true });
+    console.log(`[yt-dlp] Downloading ${target.asset}...`);
     const response = await fetch(`${RELEASE_BASE}/${target.asset}`, { redirect: 'follow' });
     if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
 
-    fs.writeFileSync(destination, Buffer.from(await response.arrayBuffer()));
-    fs.chmodSync(destination, 0o755);
-    console.log(`yt-dlp installed at ${destination}`);
+    const tempPath = `${YTDLP_BIN_PATH}.download`;
+    fs.writeFileSync(tempPath, Buffer.from(await response.arrayBuffer()));
+    fs.chmodSync(tempPath, 0o755);
+    fs.renameSync(tempPath, YTDLP_BIN_PATH);
+    console.log(`[yt-dlp] Installed at ${YTDLP_BIN_PATH}`);
+    return YTDLP_BIN_PATH;
 }
 
-main().catch((err) => {
-    console.error('yt-dlp setup failed:', err.message);
-    process.exit(1);
-});
+module.exports = { ensureYtDlp, YTDLP_BIN_PATH };
+
+if (require.main === module) {
+    ensureYtDlp({ force: true }).catch((err) => {
+        console.error('yt-dlp setup failed:', err.message);
+        process.exit(1);
+    });
+}
