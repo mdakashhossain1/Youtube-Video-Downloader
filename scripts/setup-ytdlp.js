@@ -29,7 +29,23 @@ async function ensureYtDlp({ force = false } = {}) {
     return YTDLP_BIN_PATH;
 }
 
-module.exports = { ensureYtDlp, YTDLP_BIN_PATH };
+const YTDLP_ZIPAPP_PATH = path.join(BIN_DIR, 'yt-dlp.zipapp');
+
+async function ensureYtDlpZipapp({ force = false } = {}) {
+    if (!force && fs.existsSync(YTDLP_ZIPAPP_PATH)) return YTDLP_ZIPAPP_PATH;
+
+    fs.mkdirSync(BIN_DIR, { recursive: true });
+    console.log('[yt-dlp] Downloading Python build (yt-dlp)...');
+    const response = await fetch(`${RELEASE_BASE}/yt-dlp`, { redirect: 'follow' });
+    if (!response.ok) throw new Error(`Download failed with HTTP ${response.status}`);
+
+    const tempPath = `${YTDLP_ZIPAPP_PATH}.download`;
+    fs.writeFileSync(tempPath, Buffer.from(await response.arrayBuffer()));
+    fs.renameSync(tempPath, YTDLP_ZIPAPP_PATH);
+    return YTDLP_ZIPAPP_PATH;
+}
+
+module.exports = { ensureYtDlp, ensureYtDlpZipapp, YTDLP_BIN_PATH };
 
 if (require.main === module) {
     ensureYtDlp({ force: true }).catch((err) => {

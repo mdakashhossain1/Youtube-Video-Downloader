@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { spawn, execFile } = require('child_process');
-const { ensureYtDlp, YTDLP_BIN_PATH } = require('./scripts/setup-ytdlp');
+const { ensureYtDlp, ensureYtDlpZipapp, YTDLP_BIN_PATH } = require('./scripts/setup-ytdlp');
 
 let ffmpegPath = null;
 try {
@@ -14,6 +14,11 @@ try {
     console.warn('[ffmpeg] ffmpeg-static is not installed. Run `npm install` for 720p+ downloads.');
 }
 const { Innertube, Platform, UniversalCache } = require('youtubei.js');
+
+const envFile = path.resolve(__dirname, '.env');
+if (fs.existsSync(envFile) && typeof process.loadEnvFile === 'function') {
+    process.loadEnvFile(envFile);
+}
 
 // ── Anti-Crash Process Shield ────────────────────────────────────────────────
 // Prevents unhandled stream abortions or YouTube connection drops from killing the server
@@ -467,9 +472,68 @@ const JOB_TIMEOUT_MS = 30 * 60 * 1000;
 const YTDLP_PATH = process.env.YTDLP_PATH || YTDLP_BIN_PATH;
 let activeJobs = 0;
 
-const ytDlpReady = process.env.YTDLP_PATH
-    ? Promise.resolve()
-    : ensureYtDlp().catch((err) => console.error(`[yt-dlp] Auto-install failed: ${err.message}`));
+let ytDlpLauncher = { cmd: YTDLP_PATH, prefix: [] };
+
+function canRun(cmd, args) {
+    return new Promise((resolve) => {
+        execFile(cmd, [...args, '--version'], { timeout: 60000, windowsHide: true }, (err, stdout) => {
+            if (err) console.warn(`[yt-dlp] ${cmd} cannot run: ${err.message.replace(/\s+/g, ' ').slice(0, 200)}`);
+            resolve(!err && Boolean(stdout.trim()));
+        });
+    });
+}
+
+function venvPythons() {
+    const root = path.join(os.homedir(), 'virtualenv');
+    try {
+        return fs
+            .readdirSync(root)
+            .flatMap((app) => fs.readdirSync(path.join(root, app)).map((version) => path.join(root, app, version, 'bin', 'python')))
+            .filter((python) => fs.existsSync(python));
+    } catch {
+        return [];
+    }
+}
+
+function pythonCandidates() {
+    let alt = [];
+    try {
+        alt = fs.readdirSync('/opt/alt')
+            .filter((dir) => /^python3d+$/.test(dir))
+            .sort((a, b) => parseInt(b.slice(6), 10) - parseInt(a.slice(6), 10))
+            .map((dir) => `/opt/alt/${dir}/bin/python3`);
+    } catch {
+        /* not a CloudLinux host */
+    }
+    return [...alt, 'python3', 'python'];
+}
+
+async function selectYtDlpLauncher() {
+    if (process.env.YTDLP_PATH) return;
+    await ensureYtDlp();
+    if (await canRun(YTDLP_PATH, [])) return;
+    if (process.platform === 'win32') return;
+
+    for (const python of venvPythons()) {
+        if (await canRun(python, ['-m', 'yt_dlp'])) {
+            ytDlpLauncher = { cmd: python, prefix: ['-m', 'yt_dlp'] };
+            console.log(`[yt-dlp] Using the Python environment at ${python}.`);
+            return;
+        }
+    }
+
+    const zipapp = await ensureYtDlpZipapp();
+    for (const python of pythonCandidates()) {
+        if (await canRun(python, [zipapp])) {
+            ytDlpLauncher = { cmd: python, prefix: [zipapp] };
+            console.log(`[yt-dlp] Standalone binary is blocked on this host; using the Python build via ${python}.`);
+            return;
+        }
+    }
+    console.error('[yt-dlp] No working launcher found (binary and Python build both failed).');
+}
+
+const ytDlpReady = selectYtDlpLauncher().catch((err) => console.error(`[yt-dlp] Setup failed: ${err.message}`));
 
 async function listAvailableHeights(yt, videoId) {
     for (const client of LISTING_CLIENTS) {
@@ -519,7 +583,7 @@ function buildYtDlpArgs(videoId, { isAudio, audioFormat, height }, jobDir) {
 
 function runYtDlpJob(videoId, options, jobDir, onProcess) {
     return new Promise((resolve, reject) => {
-        const child = spawn(YTDLP_PATH, buildYtDlpArgs(videoId, options, jobDir), {
+        const child = spawn(ytDlpLauncher.cmd, [...ytDlpLauncher.prefix, ...buildYtDlpArgs(videoId, options, jobDir)], {
             stdio: ['ignore', 'ignore', 'pipe'],
             windowsHide: true,
         });
@@ -950,7 +1014,7 @@ const listenTarget =
 
 async function updateYtDlp() {
     await ytDlpReady;
-    execFile(YTDLP_PATH, ['-U'], { timeout: 120000, windowsHide: true }, (err, stdout) => {
+    execFile(ytDlpLauncher.cmd, [...ytDlpLauncher.prefix, '-U'], { timeout: 120000, windowsHide: true }, (err, stdout) => {
         if (err) return console.warn(`[yt-dlp] Auto-update skipped: ${err.message.split('\n')[0]}`);
         console.log(`[yt-dlp] ${stdout.trim().split('\n').pop()}`);
     });

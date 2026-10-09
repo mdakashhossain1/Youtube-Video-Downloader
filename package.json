@@ -12,7 +12,6 @@
     "login": "node login.js",
     "preview": "vite preview",
     "setup:ytdlp": "node scripts/setup-ytdlp.js",
-    "postinstall": "node scripts/setup-ytdlp.js",
     "deploy": "bash scripts/deploy.sh"
   },
   "dependencies": {
